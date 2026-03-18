@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Local tool/editor caches
+.cache/
+.idea/
+.vscode/
+
+# Env overrides and local secrets
+.env
+.env.*
+!.env.example
+
+# Go build/test artifacts
+bin/
+dist/
+coverage.out
+*.coverprofile
+*.test
+
+# Compiled binaries accidentally created in repo roots or playground dirs
+/tally
+/engine
+/loadgen
+/bench
+
+# Benchmark/runtime outputs
+*.log
+*.prof
+*.pprof
+bench-results/
+
+# Dependency/vendor snapshots only if explicitly adopted later
+vendor/
