@@ -422,6 +422,34 @@ Spans for:
 
 Every 10 seconds, the engine writes a `metric_snapshots` row to Postgres. The benchmark harness reads these for its report.
 
+### 9.5 Alerting (CloudWatch Alarms)
+
+The engine emits key metrics as CloudWatch custom metrics via the embedded metric format (structured log lines that CloudWatch parses into metric data — no agent needed, works natively with ECS/Fargate log drivers).
+
+**Alarms** (defined in `observability-stack.ts`, all thresholds configurable via CDK context):
+
+| Alarm | Metric | Condition | Rationale |
+|---|---|---|---|
+| Match rate degradation | `match_rate` | < 95% for 2 consecutive 60s periods | Core correctness signal — sustained drop means matching logic, a source connector, or a dependency is failing. |
+| p99 match latency breach | `match_latency_p99_ms` | > 50ms for 3 consecutive 60s periods | Latency spike indicates Redis contention, Postgres lock pressure, or candidate window bloat. |
+| Discrepancy rate spike | `discrepancies_opened_total` | > 2× rolling baseline over 5 minutes | Sudden spike means a source is dropping events or producing malformed data at higher-than-injected rates. |
+| Pending window overflow | `pending_window_size` | > 50,000 candidates | Engine is ingesting faster than it can match — backpressure or scaling signal. |
+| Ingestion stall | `events_ingested_total` | < 1 event/min for any source_type for 2 consecutive periods | A source connector has silently died or lost its upstream connection. |
+
+**Alarm actions**: SNS topic → email (sufficient for a portfolio project; production would route to PagerDuty/Opsgenie). The SNS topic is a single CDK construct; swapping the subscription target is a one-line change.
+
+**CloudWatch dashboard** (`TallyOperationalDashboard`, defined in `observability-stack.ts`):
+
+- **Top row**: live throughput by source (line chart), match rate (single-value gauge with conditional coloring — green ≥ 99%, yellow ≥ 95%, red < 95%)
+- **Middle row**: match latency p50/p95/p99 (stacked area), pending window size (line chart)
+- **Bottom row**: discrepancy open rate by type (stacked bar), alarm status summary
+
+Dashboard is deployed with `cdk deploy` and torn down with `cdk destroy` — zero manual console setup.
+
+**Design decision (add to DECISIONS.md)**:
+
+**D006: CloudWatch embedded metric format over a StatsD/Prometheus sidecar.** The engine already writes structured JSON logs (zerolog). CloudWatch's embedded metric format lets us annotate those same log lines with metric dimensions and values — CloudWatch extracts them automatically. This avoids running a separate metrics agent or sidecar, keeps the ECS task definition simple, and costs nothing beyond existing log ingestion. Tradeoff: we're coupled to CloudWatch for metric storage on AWS, but locally we still have the internal metrics API and Postgres snapshots. The OTel traces export to stdout/Jaeger regardless.
+
 ---
 
 ## 10) Query API
@@ -666,7 +694,7 @@ Components:
 - **ECS Fargate** for engine instances (0.5 vCPU / 1GB each, ~$0.60/day per instance)
 - **ECS Fargate** for load generator (1 vCPU / 2GB, ~$1.20/day)
 - **S3** for benchmark results and ground truth files (pennies)
-- **CloudWatch** for centralized logs and metrics (free tier covers this)
+- **CloudWatch** for centralized logs, custom metrics (embedded metric format), alarms, and operational dashboard (free tier covers logs; custom metrics ~$0.30/metric/month, well under $5 total)
 
 **Estimated cost for 2 weeks**: Run infrastructure ~8 hours/day for ~10 days of active testing = ~80 instance-hours.
 
@@ -704,6 +732,7 @@ Deploy 2, then 4 engine instances. Run the same benchmark at each count. The exp
 - Throughput ceiling under real network conditions
 - Behavior under ECS task restarts (Fargate kills and restarts a task — does crash recovery work?)
 - CloudWatch integration: are logs, metrics, and traces flowing correctly?
+- Alarm validation: do alarms fire within expected timeframes when conditions degrade? (Test by killing a source connector and injecting high error rates during a bench run.)
 
 #### CDK stack structure
 
@@ -716,10 +745,18 @@ infra/
       data-stack.ts        # RDS, ElastiCache
       engine-stack.ts      # ECS service (configurable instance count)
       loadgen-stack.ts     # ECS task for load generator
-      observability-stack.ts  # CloudWatch dashboards, log groups
+      observability-stack.ts  # CloudWatch dashboard, log groups, custom metrics namespace, alarms, SNS topic
 ```
 
-**Handwrite**: Partition strategy design, scaling test plan. **Generate**: All CDK code, ECS task definitions, SQS queue config, CloudWatch dashboard definitions.
+**Handwrite**: Partition strategy design, scaling test plan, alarm threshold rationale (section 9.5). **Generate**: All CDK code, ECS task definitions, SQS queue config, CloudWatch dashboard and alarm definitions.
+
+**Additional Phase 6 deliverables (observability)**:
+
+- Embedded metric format annotations added to zerolog output (match_rate, match_latency_p99, pending_window_size, discrepancies_opened, events_ingested by source)
+- CloudWatch alarms deployed via `observability-stack.ts` with SNS email notifications
+- CloudWatch dashboard (`TallyOperationalDashboard`) deployed and validated against live bench run
+- Verify alarms fire correctly: run a bench with deliberately degraded conditions (kill one source connector mid-run → ingestion stall alarm fires; inject high error rate → discrepancy spike alarm fires)
+- `docs/DECISIONS.md` entry D006 written
 
 ---
 
