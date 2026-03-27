@@ -678,10 +678,9 @@ Deliverables:
 **Exit check**: `make bench` produces a clean, complete report. `make bench-crash` passes. You have real local numbers: throughput, match rate, latency percentiles, crash recovery time. These are your baseline before AWS.
 
 ---
-
 ### Phase 6: AWS deployment + scale testing (weeks 18–19, ~20 hours)
 
-**Goal**: Deploy to AWS, run the engine across multiple instances, prove horizontal scaling, collect at-scale metrics.
+**Goal**: Deploy to AWS, run the engine across multiple pods, prove horizontal scaling, collect at-scale metrics.
 
 #### Infrastructure (AWS CDK)
 
@@ -691,10 +690,10 @@ Components:
 
 - **RDS Postgres** (db.t3.medium, ~$1.15/day) — single instance, no replicas needed
 - **ElastiCache Redis** (cache.t3.micro, ~$0.40/day) — single node
-- **ECS Fargate** for engine instances (0.5 vCPU / 1GB each, ~$0.60/day per instance)
-- **ECS Fargate** for load generator (1 vCPU / 2GB, ~$1.20/day)
+- **EKS Fargate** for engine pods (0.5 vCPU / 1GB each, ~$0.60/day per pod + ~$2.40/day EKS control plane)
+- **EKS Fargate** for load generator pod (1 vCPU / 2GB, ~$1.20/day)
 - **S3** for benchmark results and ground truth files (pennies)
-- **CloudWatch** for centralized logs, custom metrics (embedded metric format), alarms, and operational dashboard (free tier covers logs; custom metrics ~$0.30/metric/month, well under $5 total)
+- **CloudWatch** for centralized logs (via Fluent Bit), custom metrics (embedded metric format), alarms, and operational dashboard (free tier covers logs; custom metrics ~$0.30/metric/month, well under $5 total)
 
 **Estimated cost for 2 weeks**: Run infrastructure ~8 hours/day for ~10 days of active testing = ~80 instance-hours.
 
@@ -702,62 +701,66 @@ Components:
 |---|---|---|
 |RDS Postgres (db.t3.medium)|$0.38|$3.80|
 |ElastiCache (cache.t3.micro)|$0.13|$1.30|
-|ECS engine × 1 instance|$0.20|$2.00|
-|ECS engine × 4 instances|$0.80|$8.00|
-|ECS load generator|$0.40|$4.00|
+|EKS control plane|$0.80|$8.00|
+|EKS engine × 1 pod|$0.20|$2.00|
+|EKS engine × 4 pods|$0.80|$8.00|
+|EKS load generator pod|$0.40|$4.00|
 |Data transfer + S3 + CW|—|~$2.00|
-|**Total (single engine)**||**~$13**|
-|**Total (4-instance scaling test)**||**~$19**|
+|**Total (single engine)**||**~$21**|
+|**Total (4-pod scaling test)**||**~$27**|
 
-Worst case with some overnight accidents and extra runs: **$40–60**. Well under $100.
+Worst case with some overnight accidents and extra runs: **$60–80**. Well under $100.
 
 #### Scaling test plan
 
-**Single-instance baseline**: Deploy 1 engine instance. Run `make bench` at 2,000, 5,000, and 10,000 TPS. Record throughput ceiling (where match rate or latency degrades).
+**Single-pod baseline**: Deploy 1 engine pod. Run `make bench` at 2,000, 5,000, and 10,000 TPS. Record throughput ceiling (where match rate or latency degrades).
 
-**Horizontal scaling**: The matching engine partitions by `account_ref` hash. Each engine instance owns a partition of the account space. Events are routed to the correct instance via an SQS queue per partition (or a shared queue with message filtering).
+**Horizontal scaling**: The matching engine partitions by `account_ref` hash. Each engine pod owns a partition of the account space. Events are routed to the correct pod via a Kubernetes Service with consistent hash-based routing on `account_ref`.
 
 Implementation:
 
 - Add a `partition_key` (hash of `account_ref` mod N) to canonical events
-- Each engine instance is configured with its partition range
+- Each engine pod is configured with its partition range
 - Load generator distributes events across partitions
 - Redis keys are already partitioned by nature (each amount bucket is per-currency, and accounts within a partition won't collide with other partitions)
 
-Deploy 2, then 4 engine instances. Run the same benchmark at each count. The expected result: near-linear throughput scaling (2 instances ≈ 2x throughput, 4 instances ≈ 4x) with constant latency.
+Scale the engine Deployment from 1 to 2, then 4 replicas. Run the same benchmark at each count. The expected result: near-linear throughput scaling (2 pods ≈ 2x throughput, 4 pods ≈ 4x) with constant latency.
+
+**Horizontal Pod Autoscaler**: Configure HPA on `pending_window_size` as a custom metric. When the candidate window grows beyond threshold, Kubernetes scales engine replicas automatically. Validate that HPA responds within expected timeframes under burst load.
 
 **What to measure on AWS that you can't measure locally**:
 
 - Network latency between engine ↔ Postgres ↔ Redis (adds ~1–2ms per hop vs local)
 - Throughput ceiling under real network conditions
-- Behavior under ECS task restarts (Fargate kills and restarts a task — does crash recovery work?)
+- Behavior under pod restarts (Kubernetes kills and restarts a pod — does crash recovery work?)
+- HPA validation: does scaling on `pending_window_size` metric work under burst load?
 - CloudWatch integration: are logs, metrics, and traces flowing correctly?
 - Alarm validation: do alarms fire within expected timeframes when conditions degrade? (Test by killing a source connector and injecting high error rates during a bench run.)
 
 #### CDK stack structure
-
 ```
 infra/
   cdk/
     bin/tally.ts
     lib/
-      network-stack.ts     # VPC, subnets, security groups
-      data-stack.ts        # RDS, ElastiCache
-      engine-stack.ts      # ECS service (configurable instance count)
-      loadgen-stack.ts     # ECS task for load generator
+      network-stack.ts        # VPC, subnets, security groups
+      data-stack.ts           # RDS, ElastiCache
+      cluster-stack.ts        # EKS cluster + Fargate profiles
+      engine-stack.ts         # Kubernetes Deployment + Service + HPA
+      loadgen-stack.ts        # Kubernetes Job for load generator
       observability-stack.ts  # CloudWatch dashboard, log groups, custom metrics namespace, alarms, SNS topic
 ```
 
-**Handwrite**: Partition strategy design, scaling test plan, alarm threshold rationale (section 9.5). **Generate**: All CDK code, ECS task definitions, SQS queue config, CloudWatch dashboard and alarm definitions.
+**Handwrite**: Partition strategy design, scaling test plan, HPA metric selection, alarm threshold rationale (section 9.5). **Generate**: All CDK code, Kubernetes manifests, Fargate profiles, CloudWatch dashboard and alarm definitions.
 
 **Additional Phase 6 deliverables (observability)**:
 
 - Embedded metric format annotations added to zerolog output (match_rate, match_latency_p99, pending_window_size, discrepancies_opened, events_ingested by source)
+- Fluent Bit configured for EKS Fargate log routing to CloudWatch
 - CloudWatch alarms deployed via `observability-stack.ts` with SNS email notifications
 - CloudWatch dashboard (`TallyOperationalDashboard`) deployed and validated against live bench run
 - Verify alarms fire correctly: run a bench with deliberately degraded conditions (kill one source connector mid-run → ingestion stall alarm fires; inject high error rate → discrepancy spike alarm fires)
-- `docs/DECISIONS.md` entry D006 written
-
+- `docs/DECISIONS.md` entry D006 and D007 written
 ---
 
 ### Phase 7: Final metrics + documentation (week 19–20, ~10 hours)
@@ -830,6 +833,7 @@ Re-reconcile historical data when matching logic changes or a new source is adde
 |Logging|zerolog|Structured JSON, zero-allocation. Standard in Go systems.|
 |Tracing|OpenTelemetry → stdout/Jaeger|Vendor-neutral. Can export to Jaeger locally or X-Ray on AWS.|
 |Containerization|Docker + docker-compose|Local dev. Postgres + Redis + engine in one `docker-compose up`.|
+|Orchestration|Kubernetes (EKS Fargate)|Phases 6–7. Pod scaling, HPA, crash recovery under real orchestration.|
 |Infra|AWS CDK (TypeScript)|Phases 6–7. Deploy for scale testing, tear down after.|
 |CI|GitHub Actions|Lint, test, bench on PR.|
 
@@ -848,3 +852,10 @@ These go in `docs/DECISIONS.md`. Add to this as you build.
 **D004: Amount bucketing in Redis instead of scanning.** Putting candidates in buckets by `(currency, amount ± tolerance)` means we never scan more than 3 buckets per incoming event. Tradeoff: more Redis keys, slightly more complex candidate insertion. But matching is O(bucket_size) instead of O(total_candidates).
 
 **D005: Scoring-based matching over exact-then-fuzzy cascade.** A single scoring function with configurable weights is simpler to reason about, test, and tune than a multi-stage cascade. Tradeoff: slightly more computation per candidate (always compute full score), but the math is trivial compared to the I/O.
+
+**D007: EKS Fargate over ECS Fargate.** Kubernetes is the industry standard orchestrator
+at Shopify, Wealthsimple, and Intuit. EKS Fargate gives us real Kubernetes primitives
+(Deployments, Services, HPA) without managing nodes. Tradeoff: EKS control plane adds
+~$2.40/day and Kubernetes manifests are more complex than ECS task definitions, but the
+resume signal and transferable knowledge justify it. Fargate avoids EC2 node management
+while still exercising core K8s concepts.
