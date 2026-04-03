@@ -9,5 +9,6 @@ func NewRouter(h *Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Post("/events", h.PostEvent)
 	r.Get("/events/{eventID}", h.GetEvent)
+	r.Get("/health", h.HealthCheck)
 	return r
 }

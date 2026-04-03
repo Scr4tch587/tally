@@ -17,9 +17,13 @@ func Connect(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func InsertEvent(ctx context.Context, pool *pgxpool.Pool, event *event.CanonicalEvent) error {
-	_, err := pool.Exec(ctx, "INSERT INTO canonical_events VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING", event.EventID, event.SourceType, event.AmountMinor, event.Currency, event.EventID)
-	return err
+func InsertEvent(ctx context.Context, pool *pgxpool.Pool, event *event.CanonicalEvent) (bool, error) {
+	tag, err := pool.Exec(ctx, "INSERT INTO canonical_events (event_id, source_type, amount_minor, currency, idempotency_key) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING", event.EventID, event.SourceType, event.AmountMinor, event.Currency, event.EventID)
+	if tag.RowsAffected() == 0 {
+		return false, err
+	} else {
+		return true, err
+	}
 }
 
 func GetEvent(ctx context.Context, pool *pgxpool.Pool, eventID string) (*event.CanonicalEvent, error) {
@@ -45,7 +49,7 @@ func ConfirmMatch(ctx context.Context, pool *pgxpool.Pool, eventA, eventB string
 	defer tx.Rollback(ctx)
 
 	var status string
-	err = tx.QueryRow(ctx, "SELECT status FROM canonical_events WHERE event_id = $1", eventA).Scan(&status)
+	err = tx.QueryRow(ctx, "SELECT match_status FROM canonical_events WHERE event_id = $1", eventA).Scan(&status)
 	if err != nil {
 		return err
 	}
@@ -54,7 +58,7 @@ func ConfirmMatch(ctx context.Context, pool *pgxpool.Pool, eventA, eventB string
 		return fmt.Errorf("Status of event is not pending: %s", eventA)
 	}
 	
-	err = tx.QueryRow(ctx, "SELECT status FROM canonical_events WHERE event_id = $1", eventB).Scan(&status)
+	err = tx.QueryRow(ctx, "SELECT match_status FROM canonical_events WHERE event_id = $1", eventB).Scan(&status)
 	if err != nil {
 		return err
 	}
