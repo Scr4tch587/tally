@@ -9,11 +9,16 @@ import (
 
 type CanonicalEvent struct {
 	EventID string
+	SourceEventID string
 	SourceType string
 	AmountMinor int64
 	Currency string
 	Timestamp time.Time
 	Metadata map[string]string
+	IngestedAt time.Time
+	Direction string
+	AccountRef string 
+	IdempotencyKey string
 }
 
 func NewCanonicalEvent(eventID string, sourceType string, amountMinor int64, currency string, ts time.Time) (*CanonicalEvent, error) {

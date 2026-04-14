@@ -43,7 +43,7 @@ From the spec:
 
 ## Current Focus
 
-`Establish the Phase 1 schema, starting with the canonical_events migration and migration wiring.`
+`Move from migration setup into the canonical event contract; struct fields are expanded, but constructor, validation, and callers still need alignment.`
 
 ## Current Repo Assessment
 
@@ -53,10 +53,10 @@ Status is based on the repository state reviewed on 2026-04-09.
 | --- | --- | --- |
 | Go module | Partial | Repo builds around a single `main.go`, but the spec expects clearer project scaffolding and command entry points. |
 | Docker Compose | Done | [docker-compose.yml](/Users/scr4tch/Documents/Coding/Projects/tally/docker-compose.yml) defines Postgres and Redis. |
-| Makefile | Missing | No `Makefile` exists yet. |
-| Migrations | Missing | No `migrations/` directory exists yet. |
+| Makefile | Partial | [Makefile](/Users/scr4tch/Documents/Coding/Projects/tally/Makefile) now provides `run`, `test`, and `migrate`, but Phase 1 verification still remains. |
+| Migrations | Partial | [migrations/0001_create_canonical_events.sql](/Users/scr4tch/Documents/Coding/Projects/tally/migrations/0001_create_canonical_events.sql) exists, and [scripts/migrate.sh](/Users/scr4tch/Documents/Coding/Projects/tally/scripts/migrate.sh) applies migrations with `psql` plus a `schema_migrations` table. |
 | Docs workspace | Partial | `README.md` and `spec.md` exist; `docs/` did not previously exist. |
-| Canonical event model | Partial | [internal/event/canonical.go](/Users/scr4tch/Documents/Coding/Projects/tally/internal/event/canonical.go) exists, but it does not yet match the Phase 1 contract. Missing fields include `SourceEventID`, `IngestedAt`, `Direction`, `AccountRef`, and `IdempotencyKey`. |
+| Canonical event model | Partial | [internal/event/canonical.go](/Users/scr4tch/Documents/Coding/Projects/tally/internal/event/canonical.go) now includes the Phase 1 fields on the struct, but the constructor, validation, and callers still reflect the older partial contract. |
 | Ledger connector | Missing | Current API accepts canonical JSON directly rather than ledger-source JSON plus normalization. |
 | Postgres event ingestion | Partial | [internal/store/postgres.go](/Users/scr4tch/Documents/Coding/Projects/tally/internal/store/postgres.go) inserts some fields, but not the full schema and not the spec-defined idempotency key. |
 | Structured logging | Partial | [internal/logger/logger.go](/Users/scr4tch/Documents/Coding/Projects/tally/internal/logger/logger.go) uses zerolog, but correlation IDs and stage fields are not wired through request handling. |
@@ -96,6 +96,7 @@ Phase 1 is done when all of the following are true:
 - [ ] Create any missing top-level directories required for Phase 1:
   `cmd/`, `migrations/`, `configs/`, `docs/`.
 - [ ] Add a `Makefile` with at least `make migrate`, `make run`, and `make test`.
+- [x] Add a `Makefile` with at least `make migrate`, `make run`, and `make test`.
 - [ ] Confirm local run commands and environment variables are explicit rather than hardcoded where practical.
 - [ ] Record the agreed Phase 1 structure here after implementation.
 
@@ -106,7 +107,7 @@ Phase 1 is done when all of the following are true:
 - [ ] Decide whether `matches`, `match_events`, `discrepancies`, and `metric_snapshots` are created now for spec alignment or stubbed as future-ready migrations.
 - [x] Ensure `canonical_events.idempotency_key` is unique.
 - [x] Ensure schema uses `match_status` exactly as described by the spec.
-- [ ] Add a migration application path wired to `make migrate`.
+- [x] Add a migration application path wired to `make migrate`.
 - [ ] Verify migrations from a fresh database.
 
 ### 3. Correct the canonical event contract
@@ -224,6 +225,13 @@ Use this order unless a concrete dependency forces a change:
 - Identified major gaps: no `Makefile`, no migrations, no Source A raw connector, incomplete canonical event contract, no basic load generator, incomplete idempotency handling.
 - No code behavior was changed yet as part of this checklist creation.
 - Added `migrations/0001_create_canonical_events.sql` with the spec-aligned `canonical_events` schema and indexes; verified by manual comparison against spec section 5.1; still need migration tooling and fresh-database execution verification.
+
+### 2026-04-13
+
+- Added [Makefile](/Users/scr4tch/Documents/Coding/Projects/tally/Makefile) targets for `run`, `test`, and `migrate`, and added [scripts/migrate.sh](/Users/scr4tch/Documents/Coding/Projects/tally/scripts/migrate.sh) to apply pending SQL files via `psql` while recording applied versions in `schema_migrations`.
+- Verified `make test` no longer fails on scratch files after marking them with ignore build tags, and verified `make migrate` applies [migrations/0001_create_canonical_events.sql](/Users/scr4tch/Documents/Coding/Projects/tally/migrations/0001_create_canonical_events.sql) successfully against the local Postgres setup.
+- Expanded the [internal/event/canonical.go](/Users/scr4tch/Documents/Coding/Projects/tally/internal/event/canonical.go) struct to include the missing Phase 1 fields and reviewed the role of each field in the canonical contract.
+- Still need to align the canonical event constructor and validation with the richer struct, then update store and API callers to use the spec-shaped contract.
 
 ## Next Recommended Task
 
