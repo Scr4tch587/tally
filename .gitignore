@@ -30,8 +30,5 @@ coverage.out
 *.pprof
 bench-results/
 
-# Local docs drafts
-/docs/
-
 # Dependency/vendor snapshots only if explicitly adopted later
 vendor/
