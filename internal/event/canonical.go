@@ -8,28 +8,81 @@ import (
 )
 
 type CanonicalEvent struct {
-	EventID string
-	SourceEventID string
-	SourceType string
-	AmountMinor int64
-	Currency string
-	Timestamp time.Time
-	Metadata map[string]string
-	IngestedAt time.Time
-	Direction string
-	AccountRef string 
-	IdempotencyKey string
+    TenantID         string
+    EventID          string    // globally unique, assigned by connector
+    SourceType       string    // "ledger" | "processor" | "bank"
+    SourceEventID    string    // original ID from the source system
+    AmountMinor      int64
+    Currency         string    // ISO 4217 when fiat
+    AssetCode        string    // optional: "USD" | "USDC" | etc. for sandbox/demo cases
+    Timestamp        time.Time // source-reported transaction time
+    IngestedAt       time.Time
+    Direction        string    // "debit" | "credit"
+    AccountRef       string    // normalized account or wallet reference
+    CounterpartyRef  string    // raw payee / customer / merchant descriptor
+    Metadata         map[string]string
+    IdempotencyKey   string    // tenant_id + source_type + source_event_id
 }
 
-func NewCanonicalEvent(eventID string, sourceType string, amountMinor int64, currency string, ts time.Time) (*CanonicalEvent, error) {
-	if eventID == "" {
-		return nil, fmt.Errorf("event ID is required")
+func RequireNonEmpty(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+
+	return nil
+}
+
+func NewCanonicalEvent(tenantID string, eventID string, sourceType string, sourceEventID string, amountMinor int64, assetCode string, currency string, timestamp time.Time, direction string, accountRef string, counterpartyRef string, metadata map[string]string) (*CanonicalEvent, error) {
+	err := RequireNonEmpty("TenantID", tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err := RequireNonEmpty("EventID", eventID)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err := RequireNonEmpty("SourceType", sourceType)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err := RequireNonEmpty("SourceEventID", sourceEventID)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err := RequireNonEmpty("Currency", currency)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err := RequireNonEmpty("AccountRef", accountRef)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err := RequireNonEmpty("CounterpartyRef", counterpartyRef)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	if timestamp.IsZero() {
+		return nil, fmt.Errorf("Timestamp must not be zero")
 	}
 	if amountMinor <= 0 {
-		return nil, fmt.Errorf("amountMinor must be positive")
+		return nil, fmt.Errorf("Amount must be positive")
 	}
-	metadata := map[string]string{}
-	return &CanonicalEvent{EventID: eventID, SourceType: sourceType, AmountMinor: amountMinor, Currency: currency, Timestamp: ts, Metadata: metadata}, nil
+	if direction != "credit" && direction != "debit" {
+		return nil, fmt.Errorf("Direction must be debit or credit")
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	idempotencyKey := tenantID + ":" + sourceType + ":" + sourceEventID
+	ingestedAt := time.Now()
+	return &CanonicalEvent{TenantID: tenantID, EventID: eventID, SourceType: sourceType, SourceEventID: sourceEventID, AmountMinor: amountMinor, Currency: currency, AssetCode: assetCode, Timestamp: timestamp, IngestedAt: ingestedAt, Direction: direction, AccountRef: accountRef, CounterpartyRef: counterpartyRef, Metadata: metadata, IdempotencyKey: idempotencyKey}, nil
 }
 
 type Normalizer interface {
