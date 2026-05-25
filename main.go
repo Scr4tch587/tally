@@ -1,15 +1,15 @@
 package main
 
 import (
-	"tally/internal/store"
 	"context"
-	"tally/internal/logger"
-	"tally/internal/api"
 	"net/http"
-	"time"
 	"os"
 	"os/signal"
 	"syscall"
+	"tally/internal/api"
+	"tally/internal/logger"
+	"tally/internal/store"
+	"time"
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("postgres connection failed")
 		return
-	} 
+	}
 	defer pool.Close()
 
 	err = pool.Ping(ctx)

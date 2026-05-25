@@ -7,7 +7,7 @@ import "time"
 
 func RunIngest() {
 	ch := make(chan *event.CanonicalEvent, 10)
-		
+
 	var wg sync.WaitGroup
 	wg.Add(3)
 
@@ -15,7 +15,7 @@ func RunIngest() {
 		defer wg.Done()
 		for i := 1; i <= 100; i++ {
 			source := "payments"
-			if i % 2 == 0 {
+			if i%2 == 0 {
 				source = "ledger"
 			}
 			ce, _ := event.NewCanonicalEvent(fmt.Sprintf("evt-%d", i), source, 100, "USD", time.Now())

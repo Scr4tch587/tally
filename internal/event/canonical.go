@@ -1,27 +1,27 @@
 package event
 
 import (
-	"fmt"
-	"time"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 )
 
 type CanonicalEvent struct {
-    TenantID         string
-    EventID          string    // globally unique, assigned by connector
-    SourceType       string    // "ledger" | "processor" | "bank"
-    SourceEventID    string    // original ID from the source system
-    AmountMinor      int64
-    Currency         string    // ISO 4217 when fiat
-    AssetCode        string    // optional: "USD" | "USDC" | etc. for sandbox/demo cases
-    Timestamp        time.Time // source-reported transaction time
-    IngestedAt       time.Time
-    Direction        string    // "debit" | "credit"
-    AccountRef       string    // normalized account or wallet reference
-    CounterpartyRef  string    // raw payee / customer / merchant descriptor
-    Metadata         map[string]string
-    IdempotencyKey   string    // tenant_id + source_type + source_event_id
+	TenantID        string
+	EventID         string // globally unique, assigned by connector
+	SourceType      string // "ledger" | "processor" | "bank"
+	SourceEventID   string // original ID from the source system
+	AmountMinor     int64
+	Currency        string    // ISO 4217 when fiat
+	AssetCode       string    // optional: "USD" | "USDC" | etc. for sandbox/demo cases
+	Timestamp       time.Time // source-reported transaction time
+	IngestedAt      time.Time
+	Direction       string // "debit" | "credit"
+	AccountRef      string // normalized account or wallet reference
+	CounterpartyRef string // raw payee / customer / merchant descriptor
+	Metadata        map[string]string
+	IdempotencyKey  string // tenant_id + source_type + source_event_id
 }
 
 func RequireNonEmpty(name, value string) error {
@@ -38,32 +38,27 @@ func NewCanonicalEvent(tenantID string, eventID string, sourceType string, sourc
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
 
-	err := RequireNonEmpty("EventID", eventID)
+	err = RequireNonEmpty("EventID", eventID)
 	if err != nil {
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
 
-	err := RequireNonEmpty("SourceType", sourceType)
+	err = RequireNonEmpty("SourceType", sourceType)
 	if err != nil {
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
 
-	err := RequireNonEmpty("SourceEventID", sourceEventID)
+	err = RequireNonEmpty("SourceEventID", sourceEventID)
 	if err != nil {
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
 
-	err := RequireNonEmpty("Currency", currency)
+	err = RequireNonEmpty("AccountRef", accountRef)
 	if err != nil {
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
 
-	err := RequireNonEmpty("AccountRef", accountRef)
-	if err != nil {
-		return nil, fmt.Errorf("ValidationError: %w", err)
-	}
-
-	err := RequireNonEmpty("CounterpartyRef", counterpartyRef)
+	err = RequireNonEmpty("CounterpartyRef", counterpartyRef)
 	if err != nil {
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
@@ -71,9 +66,12 @@ func NewCanonicalEvent(tenantID string, eventID string, sourceType string, sourc
 	if timestamp.IsZero() {
 		return nil, fmt.Errorf("Timestamp must not be zero")
 	}
-	if amountMinor <= 0 {
-		return nil, fmt.Errorf("Amount must be positive")
+
+	err = ValidateAmount(amountMinor, currency)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
+
 	if direction != "credit" && direction != "debit" {
 		return nil, fmt.Errorf("Direction must be debit or credit")
 	}
@@ -92,23 +90,50 @@ type Normalizer interface {
 type LedgerNormalizer struct{}
 
 func (n *LedgerNormalizer) Normalize(raw []byte) (*CanonicalEvent, error) {
-	newEvent := CanonicalEvent{}
-	err := json.Unmarshal(raw, &newEvent)
-	if err != nil {
+	var input struct {
+		TenantID        string            `json:"TenantID"`
+		EventID         string            `json:"EventID"`
+		SourceType      string            `json:"SourceType"`
+		SourceEventID   string            `json:"SourceEventID"`
+		AmountMinor     int64             `json:"AmountMinor"`
+		Currency        string            `json:"Currency"`
+		AssetCode       string            `json:"AssetCode"`
+		Timestamp       time.Time         `json:"Timestamp"`
+		Direction       string            `json:"Direction"`
+		AccountRef      string            `json:"AccountRef"`
+		CounterpartyRef string            `json:"CounterpartyRef"`
+		Metadata        map[string]string `json:"Metadata"`
+	}
+
+	if err := json.Unmarshal(raw, &input); err != nil {
 		return nil, err
 	}
-	return &newEvent, nil
+
+	return NewCanonicalEvent(
+		input.TenantID,
+		input.EventID,
+		input.SourceType,
+		input.SourceEventID,
+		input.AmountMinor,
+		input.AssetCode,
+		input.Currency,
+		input.Timestamp,
+		input.Direction,
+		input.AccountRef,
+		input.CounterpartyRef,
+		input.Metadata,
+	)
 }
 
-var ErrInvalidAmount = errors.New("invalid amount")
+var ErrInvalidAmount = errors.New("amount must be positive")
 var ErrUnsupportedCurrency = errors.New("unsupported currency")
 
 func ValidateAmount(amount int64, currency string) error {
 	if amount <= 0 {
-		return fmt.Errorf("ValidateAmount: %w", ErrInvalidAmount)
+		return fmt.Errorf("Error validating amount: %w", ErrInvalidAmount)
 	}
 	if currency != "USD" && currency != "EUR" && currency != "GBP" {
-		return fmt.Errorf("SupportCurrency: %w", ErrUnsupportedCurrency)
+		return fmt.Errorf("Error validating currency: %w", ErrUnsupportedCurrency)
 	}
 
 	return nil

@@ -1,19 +1,19 @@
 package api
 
 import (
-	"tally/internal/event"
-	"tally/internal/store"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/rs/zerolog"
-	"net/http"
 	"encoding/json"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog"
+	"net/http"
+	"tally/internal/event"
+	"tally/internal/store"
 )
 
 type Handler struct {
-	Pool *pgxpool.Pool 
-	Log zerolog.Logger
+	Pool   *pgxpool.Pool
+	Log    zerolog.Logger
 	Client *redis.Client
 }
 
@@ -32,8 +32,8 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		h.Log.Info().Err(err).Msg("Failed to insert event")
 		return
-	} 
-	
+	}
+
 	if notSeen {
 		w.WriteHeader(http.StatusCreated)
 		h.Log.Info().Msg("Successfully inserted event")
@@ -49,7 +49,7 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	candidates, _ := store.FindCandidates(r.Context(), h.Client, ev.Currency, ev.AmountMinor, 60)
-	h.Log.Info().Int("candidate_count", len(candidates)).Msg("candidates found")  
+	h.Log.Info().Int("candidate_count", len(candidates)).Msg("candidates found")
 
 	for _, id := range candidates {
 		h.Log.Info().Str("candidate_id", id).Str("current_event", ev.EventID).Msg("candidate found")
@@ -88,13 +88,13 @@ func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Event not found", http.StatusNotFound)
 		return
-	} 
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ev)
 }
 
-func NewHandler(p *pgxpool.Pool, l zerolog.Logger, r *redis.Client) (*Handler) {
+func NewHandler(p *pgxpool.Pool, l zerolog.Logger, r *redis.Client) *Handler {
 	return &Handler{p, l, r}
 }
 

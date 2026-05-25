@@ -6,7 +6,7 @@ type MetadataStore struct {
 	data map[string]any
 }
 
-func NewMetadataStore() (*MetadataStore) {
+func NewMetadataStore() *MetadataStore {
 	return &MetadataStore{data: make(map[string]any)}
 }
 
@@ -34,6 +34,6 @@ func (m *MetadataStore) GetInt(key string) (int64, error) {
 	i, ok := v.(int64)
 	if ok {
 		return i, nil
-	} 
+	}
 	return 0, fmt.Errorf("Value is not a valid int64")
 }

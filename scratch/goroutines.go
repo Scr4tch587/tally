@@ -19,7 +19,7 @@ func main() {
 
 	go func() {
 		defer wg.Done()
-		for i:= 1; i <= 1000; i++ {
+		for i := 1; i <= 1000; i++ {
 			select {
 			case ch <- i:
 				time.Sleep(10 * time.Millisecond)
@@ -33,7 +33,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for v := range ch {
-			fmt.Println(v*v)
+			fmt.Println(v * v)
 		}
 	}()
 

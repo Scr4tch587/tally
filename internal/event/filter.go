@@ -16,4 +16,4 @@ func FilterByAmountRange(events []*CanonicalEvent, min, max int64) []*CanonicalE
 		}
 	}
 	return results
-}		
+}

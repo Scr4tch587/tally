@@ -21,7 +21,7 @@ func ingest(ctx context.Context, raw <-chan string) <-chan *event.CanonicalEvent
 	return out
 }
 
-func match (ctx context.Context, events <-chan *event.CanonicalEvent) <-chan struct{} {
+func match(ctx context.Context, events <-chan *event.CanonicalEvent) <-chan struct{} {
 	matcher := make(map[int64]*event.CanonicalEvent)
 	out := make(chan struct{})
 	var mu sync.Mutex
@@ -42,9 +42,9 @@ func match (ctx context.Context, events <-chan *event.CanonicalEvent) <-chan str
 		}
 	}()
 	return out
-} 
+}
 
-func Report (ctx context.Context, signals <-chan struct{}) {
+func Report(ctx context.Context, signals <-chan struct{}) {
 	counter := 0
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -58,7 +58,7 @@ func Report (ctx context.Context, signals <-chan struct{}) {
 			counter++
 		case <-ticker.C:
 			fmt.Printf("Matches found: %d\n", counter)
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -72,7 +72,7 @@ func RunPipeline() {
 		defer close(ch_raw)
 		for i := 1; i <= 200; i++ {
 			amount := 100
-			if i % 2 == 0 {
+			if i%2 == 0 {
 				amount = 200
 			}
 			ch_raw <- fmt.Sprintf(`{"EventID":"%d","SourceType":"ledger","AmountMinor":%d,"Currency":"USD"}`, i, amount)
