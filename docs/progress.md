@@ -28,7 +28,7 @@ Implemented so far:
 - Basic Redis candidate add/find/remove helpers exist.
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
 - Serializable `ConfirmMatch` persists `matches` / `match_events`, updates `match_status`, retries once on serialization failure; entity resolution and graph upsert not wired yet.
-- HTTP ingestion still confirms the first Redis candidate without the handwrite scorer (placeholder score `0`).
+- `internal/match` scorer exists but HTTP ingestion still confirms the first Redis candidate without calling `match.Score`.
 
 Major gaps:
 
@@ -48,6 +48,7 @@ Major gaps:
 - [x] `go test ./internal/pipeline` run on 2026-05-31 and passed with no test files.
 - [x] `POST /events` smoke test on 2026-05-31: valid insert `201`, duplicate replay `200` without Redis side effects, invalid source `400`, forged idempotency key ignored in DB.
 - [x] `go test ./internal/store` on 2026-05-31 with Docker Postgres up: insert metadata + `ConfirmMatch` integration passed.
+- [x] `go test ./internal/match/...` on 2026-05-31 and passed.
 
 ## Phase 1: CORE Foundations
 
@@ -149,15 +150,15 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 
 ### Event-Level Matching
 
-- [ ] Scoring function implemented with amount, time, and account components.
-- [ ] Default weights implemented: amount `0.5`, time `0.3`, account `0.2`.
-- [ ] Match threshold implemented at `0.85`.
-- [ ] Amount score supports exact match and decay to tolerance.
-- [ ] Time score supports min and max delta behavior.
-- [ ] Account score supports exact, substring, and mismatch behavior.
+- [x] Scoring function implemented with amount, time, and account components (`internal/match/score.go`).
+- [x] Default weights implemented: amount `0.5`, time `0.3`, account `0.2`.
+- [x] Match threshold implemented at `0.85`.
+- [x] Amount score supports exact match and decay to tolerance.
+- [x] Time score supports min (`5s`) and max (`120s`) delta behavior with plateau.
+- [x] Account score supports exact, substring, and mismatch behavior.
 - [ ] Candidate ranking chooses top valid candidate only.
-- [ ] False positives are prevented by conservative thresholding and tests.
-- [ ] Unit tests cover scorer edge cases.
+- [x] False positives are prevented by conservative thresholding and tests (1 minor-unit amount gap scores `0.75`, below threshold).
+- [x] Unit tests cover scorer edge cases (`internal/match/score_test.go`).
 
 ### Match Confirmation Transaction
 
