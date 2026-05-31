@@ -1,6 +1,6 @@
 # Tally Progress Tracker
 
-Last assessed: 2026-05-30
+Last assessed: 2026-05-31
 
 This document tracks implementation progress against `docs/spec.md`. Update it after every meaningful repo change so the next work session starts from reality, not memory.
 
@@ -23,6 +23,7 @@ Implemented so far:
 - Postgres and Redis local infrastructure exists in `docker-compose.yml`.
 - Initial `canonical_events` migration exists and has been partially aligned with the tenant contract.
 - Basic `POST /events`, `GET /events/{eventID}`, and `GET /health` HTTP routes exist.
+- `POST /events` validates through `NewCanonicalEvent`, computes idempotency server-side, returns `201`/`200` on insert/duplicate, and skips Redis/matching on duplicate replay.
 - Basic Postgres insert/get functions exist.
 - Basic Redis candidate add/find/remove helpers exist.
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
@@ -30,7 +31,7 @@ Implemented so far:
 
 Major gaps:
 
-- The repository does not currently pass `go test ./...`.
+- `go test ./...` passes when local Postgres/Redis are running; fails on store integration test when Docker is down.
 - The matching pipeline is incomplete.
 - Match tables, discrepancy tables, metric snapshots, graph tables, entity resolution, gRPC graph API, benchmark harness, product app, sandbox, and deployment infra are not implemented.
 - README still describes the older reconciliation-only shape more than the current graph + product spec.
@@ -40,14 +41,12 @@ Major gaps:
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
 - [ ] `ConfirmMatch` updates column `status`, but the migration defines `match_status`.
 - [ ] `ConfirmMatch` inserts into `matches`, but no migration currently creates `matches` or `match_events`.
-- [ ] API ingestion decodes `CanonicalEvent` directly and does not currently run `NewCanonicalEvent` validation or compute idempotency keys server-side.
-
 ## Latest Verification
 
-- [ ] `go test ./...` passing.
+- [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.
 - [x] `go test ./internal/event` run on 2026-05-31 and passed.
 - [x] `go test ./internal/pipeline` run on 2026-05-31 and passed with no test files.
-- [x] `go test ./...` run on 2026-05-31 and failed only because `internal/store` integration test could not connect to local Postgres.
+- [x] `POST /events` smoke test on 2026-05-31: valid insert `201`, duplicate replay `200` without Redis side effects, invalid source `400`, forged idempotency key ignored in DB.
 
 ## Phase 1: CORE Foundations
 
@@ -70,10 +69,10 @@ Goal: CORE can ingest correlated events, reconcile them correctly, materialize g
 - [ ] Processor connector/parser.
 - [ ] Bank CSV connector/parser.
 - [ ] Connector isolation: connectors know nothing about matching logic.
-- [ ] Server-side idempotency key computation on ingestion.
-- [ ] API ingestion uses constructor/normalizers instead of trusting decoded request fields.
+- [x] Server-side idempotency key computation on ingestion (HTTP path via `NewCanonicalEvent`).
+- [x] API ingestion uses constructor instead of trusting decoded request fields (`PostEventRequest` DTO).
 - [ ] Source-specific metadata preservation.
-- [ ] Ingestion logging includes correlation ID, source type, event ID, and stage.
+- [ ] `PARTIAL` Ingestion logging includes source type, event ID, and source event ID on validation failure; correlation ID and stage not wired yet.
 
 ### Postgres CORE Schema
 

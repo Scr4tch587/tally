@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"tally/internal/event"
 	"tally/internal/store"
+	"time"
 )
 
 type Handler struct {
@@ -17,9 +18,24 @@ type Handler struct {
 	Client *redis.Client
 }
 
+type PostEventRequest struct {
+	TenantID        string
+	EventID         string
+	SourceType      string
+	SourceEventID   string
+	AmountMinor     int64
+	AssetCode       string
+	Currency        string
+	Timestamp       time.Time
+	Direction       string
+	AccountRef      string
+	CounterpartyRef string
+	Metadata        map[string]string
+}
+
 func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
-	var ev event.CanonicalEvent
-	err := json.NewDecoder(r.Body).Decode(&ev)
+	var req PostEventRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
 
 	if err != nil {
 		http.Error(w, "Failed to decode request", http.StatusBadRequest)
@@ -27,28 +43,46 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	notSeen, err := store.InsertEvent(r.Context(), h.Pool, &ev)
+	ev, err := event.NewCanonicalEvent(req.TenantID, req.EventID, req.SourceType, req.SourceEventID, req.AmountMinor, req.AssetCode, req.Currency, req.Timestamp, req.Direction, req.AccountRef, req.CounterpartyRef, req.Metadata)
+	if err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		h.Log.Info().
+			Err(err).
+			Str("tenant_id", req.TenantID).
+			Str("event_id", req.EventID).
+			Str("source_type", req.SourceType).
+			Str("source_event_id", req.SourceEventID).
+			Msg("invalid canonical event request")
+		return
+	}
+
+	notSeen, err := store.InsertEvent(r.Context(), h.Pool, ev)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		h.Log.Info().Err(err).Msg("Failed to insert event")
 		return
 	}
 
-	if notSeen {
-		w.WriteHeader(http.StatusCreated)
-		h.Log.Info().Msg("Successfully inserted event")
-	} else {
+	if !notSeen {
 		w.WriteHeader(http.StatusOK)
 		h.Log.Info().Msg("Event already exists")
+		return
 	}
 
-	err = store.AddCandidate(r.Context(), h.Client, &ev)
+	w.WriteHeader(http.StatusCreated)
+	h.Log.Info().Msg("Successfully inserted event")
+
+	err = store.AddCandidate(r.Context(), h.Client, ev)
 	if err != nil {
 		h.Log.Error().Err(err).Msg("Adding event failed")
 		return
 	}
 
-	candidates, _ := store.FindCandidates(r.Context(), h.Client, ev.Currency, ev.AmountMinor, 60)
+	candidates, err := store.FindCandidates(r.Context(), h.Client, ev.Currency, ev.AmountMinor, 60)
+	if err != nil {
+		h.Log.Error().Err(err).Msg("Finding candidates failed")
+		return
+	}
 	h.Log.Info().Int("candidate_count", len(candidates)).Msg("candidates found")
 
 	for _, id := range candidates {
@@ -61,7 +95,7 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 			h.Log.Error().Err(err).Msg("Confirming match failed")
 			return
 		}
-		err = store.RemoveCandidate(r.Context(), h.Client, &ev)
+		err = store.RemoveCandidate(r.Context(), h.Client, ev)
 		if err != nil {
 			h.Log.Error().Err(err).Msg("Removing candidate failed")
 			return

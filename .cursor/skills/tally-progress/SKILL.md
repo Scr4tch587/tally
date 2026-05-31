@@ -26,6 +26,20 @@ Use `docs/spec.md` as the product/architecture source of truth. Use `docs/coach.
 - Keep PRODUCT responsible for interpretation artifacts, UI state, saved views, notes, tags, pinned insights, and sandbox controls.
 - Do not let PRODUCT read CORE tables directly; use the gRPC boundary described by the spec.
 
+## Task Breakdown Workflow
+
+For every non-trivial chunk of work:
+
+1. Break the chunk into small tasks before starting.
+2. Summarize all tasks briefly at the beginning.
+3. Mark the first task as the active task.
+4. Serve tasks one by one.
+5. For the active task, give more depth: goal, relevant files/spec sections, implementation or review focus, and verification.
+6. Do not expand later tasks in detail until they become active.
+7. After each task, update progress and move to the next task.
+
+Keep the initial task list short and scannable. The detailed explanation belongs with the current task, not the whole plan.
+
 ## Progress Tracker Workflow
 
 Before changing the repo:
