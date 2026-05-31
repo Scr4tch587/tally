@@ -25,18 +25,18 @@ Implemented so far:
 - Basic `POST /events`, `GET /events/{eventID}`, and `GET /health` HTTP routes exist.
 - Basic Postgres insert/get functions exist.
 - Basic Redis candidate add/find/remove helpers exist.
+- `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
 - A first serializable `ConfirmMatch` attempt exists, but is not currently complete or runnable.
 
 Major gaps:
 
 - The repository does not currently pass `go test ./...`.
-- The matching pipeline is incomplete and one pipeline package does not compile.
+- The matching pipeline is incomplete.
 - Match tables, discrepancy tables, metric snapshots, graph tables, entity resolution, gRPC graph API, benchmark harness, product app, sandbox, and deployment infra are not implemented.
 - README still describes the older reconciliation-only shape more than the current graph + product spec.
 
 ## Current Blockers
 
-- [ ] `internal/pipeline/ingest.go` calls the old `event.NewCanonicalEvent` signature, so `tally/internal/pipeline` does not compile.
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
 - [ ] `ConfirmMatch` updates column `status`, but the migration defines `match_status`.
 - [ ] `ConfirmMatch` inserts into `matches`, but no migration currently creates `matches` or `match_events`.
@@ -45,9 +45,9 @@ Major gaps:
 ## Latest Verification
 
 - [ ] `go test ./...` passing.
-- [x] `go test ./...` run on 2026-05-30 and failed:
-  - `internal/pipeline/ingest.go` does not compile because of the old constructor call.
-  - `internal/store` integration test could not connect to local Postgres.
+- [x] `go test ./internal/event` run on 2026-05-31 and passed.
+- [x] `go test ./internal/pipeline` run on 2026-05-31 and passed with no test files.
+- [x] `go test ./...` run on 2026-05-31 and failed only because `internal/store` integration test could not connect to local Postgres.
 
 ## Phase 1: CORE Foundations
 
@@ -58,8 +58,8 @@ Goal: CORE can ingest correlated events, reconcile them correctly, materialize g
 - [x] Define `CanonicalEvent` with `TenantID`, event IDs, source type, amount, currency, asset code, timestamps, direction, account ref, counterparty ref, metadata, and idempotency key.
 - [x] Generate idempotency key as `tenant_id:source_type:source_event_id` in the constructor.
 - [x] Validate required tenant, event, source, account, counterparty, amount, currency, timestamp, and direction fields in the constructor.
-- [ ] Validate `SourceType` against the allowed source set: `ledger`, `processor`, `bank`.
-- [ ] Normalize timestamps to UTC.
+- [x] Validate `SourceType` against the allowed source set: `ledger`, `processor`, `bank`.
+- [x] Normalize timestamps to UTC.
 - [ ] Normalize account refs according to connector rules.
 - [ ] Preserve noisy `CounterpartyRef` for entity resolution.
 - [ ] Decide whether `Currency` and `AssetCode` should both be required for fiat sandbox data or whether one derives from the other.

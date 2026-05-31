@@ -32,6 +32,13 @@ func RequireNonEmpty(name, value string) error {
 	return nil
 }
 
+func ValidateSourceType(sourceType string) error {
+	if sourceType != "ledger" && sourceType != "processor" && sourceType != "bank" {
+		return fmt.Errorf("SourceType must be ledger, processor, or bank, not %s", sourceType)
+	}
+	return nil
+}
+
 func NewCanonicalEvent(tenantID string, eventID string, sourceType string, sourceEventID string, amountMinor int64, assetCode string, currency string, timestamp time.Time, direction string, accountRef string, counterpartyRef string, metadata map[string]string) (*CanonicalEvent, error) {
 	err := RequireNonEmpty("TenantID", tenantID)
 	if err != nil {
@@ -44,6 +51,11 @@ func NewCanonicalEvent(tenantID string, eventID string, sourceType string, sourc
 	}
 
 	err = RequireNonEmpty("SourceType", sourceType)
+	if err != nil {
+		return nil, fmt.Errorf("ValidationError: %w", err)
+	}
+
+	err = ValidateSourceType(sourceType)
 	if err != nil {
 		return nil, fmt.Errorf("ValidationError: %w", err)
 	}
@@ -66,6 +78,7 @@ func NewCanonicalEvent(tenantID string, eventID string, sourceType string, sourc
 	if timestamp.IsZero() {
 		return nil, fmt.Errorf("Timestamp must not be zero")
 	}
+	timestamp = timestamp.UTC()
 
 	err = ValidateAmount(amountMinor, currency)
 	if err != nil {

@@ -14,11 +14,13 @@ func RunIngest() {
 	go func() {
 		defer wg.Done()
 		for i := 1; i <= 100; i++ {
-			source := "payments"
-			if i%2 == 0 {
-				source = "ledger"
+			sources := []string{"ledger", "processor", "bank"}
+			source := sources[(i-1)%len(sources)]
+			ce, err := event.NewCanonicalEvent("tenant-dev", fmt.Sprintf("evt-%d", i), source, fmt.Sprintf("source-evt-%d", i), 100, "USD", "USD", time.Now(), "credit", "account-1", "counterparty-1", map[string]string{})
+			if err != nil {
+				fmt.Printf("error creating canonical event: %v\n", err)
+				continue
 			}
-			ce, _ := event.NewCanonicalEvent(fmt.Sprintf("evt-%d", i), source, 100, "USD", time.Now())
 			ch <- ce
 		}
 		close(ch)
