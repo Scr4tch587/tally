@@ -90,7 +90,7 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 		if id == ev.EventID {
 			continue
 		}
-		err = store.ConfirmMatch(r.Context(), h.Pool, ev.EventID, id)
+		err = store.ConfirmMatch(r.Context(), h.Pool, ev.EventID, id, 0, nil)
 		if err != nil {
 			h.Log.Error().Err(err).Msg("Confirming match failed")
 			return

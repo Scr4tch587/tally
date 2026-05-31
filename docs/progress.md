@@ -27,7 +27,8 @@ Implemented so far:
 - Basic Postgres insert/get functions exist.
 - Basic Redis candidate add/find/remove helpers exist.
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
-- A first serializable `ConfirmMatch` attempt exists, but is not currently complete or runnable.
+- Serializable `ConfirmMatch` persists `matches` / `match_events`, updates `match_status`, retries once on serialization failure; entity resolution and graph upsert not wired yet.
+- HTTP ingestion still confirms the first Redis candidate without the handwrite scorer (placeholder score `0`).
 
 Major gaps:
 
@@ -39,18 +40,44 @@ Major gaps:
 ## Current Blockers
 
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
-- [ ] `ConfirmMatch` updates column `status`, but the migration defines `match_status`.
-- [ ] `ConfirmMatch` inserts into `matches`, but no migration currently creates `matches` or `match_events`.
+- [ ] HTTP path confirms matches without the handwrite scoring function (false-positive risk).
 ## Latest Verification
 
 - [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.
 - [x] `go test ./internal/event` run on 2026-05-31 and passed.
 - [x] `go test ./internal/pipeline` run on 2026-05-31 and passed with no test files.
 - [x] `POST /events` smoke test on 2026-05-31: valid insert `201`, duplicate replay `200` without Redis side effects, invalid source `400`, forged idempotency key ignored in DB.
+- [x] `go test ./internal/store` on 2026-05-31 with Docker Postgres up: insert metadata + `ConfirmMatch` integration passed.
 
 ## Phase 1: CORE Foundations
 
 Goal: CORE can ingest correlated events, reconcile them correctly, materialize graph events and edges, and answer basic gRPC graph queries with provenance.
+
+### Resume Swap Gate
+
+This is the point where Tally can credibly replace Wisp on the resume: the matching-and-measurement spine of Phase 1, not the full graph half of Phase 1.
+
+Required floor:
+
+- [ ] Redis Candidate Window is implemented to spec.
+- [ ] Event-Level Matching is implemented and tested.
+- [ ] Match Confirmation Transaction is implemented with `SERIALIZABLE` semantics.
+- [x] Match blockers are resolved (`match_status` column, migrations present).
+- [x] `matches` and `match_events` tables exist and are used by the normal match path.
+- [ ] Benchmark Harness measures throughput, p99 latency, match rate, and false positive rate.
+- [ ] Resume-ready numbers are produced by the benchmark harness, not estimated.
+
+Strong tier-two adds before swapping if timing allows:
+
+- [ ] Crash Recovery and Idempotency are implemented and benchmarked.
+- [ ] Discrepancies and Late Arrivals are implemented and measured.
+- [ ] Benchmark Harness reports crash recovery time and discrepancy detection time.
+
+Not required for the resume swap, even though they remain Phase 1 spec work:
+
+- [ ] Entity Resolution.
+- [ ] Counterparty Graph Materialization.
+- [ ] CORE gRPC Graph API.
 
 ### Canonical Event Contract
 
@@ -79,8 +106,8 @@ Goal: CORE can ingest correlated events, reconcile them correctly, materialize g
 - [x] `canonical_events` table exists.
 - [x] `canonical_events` includes tenant ID, asset code, counterparty ref, metadata default, idempotency key, and match status.
 - [x] Tenant-aware indexes exist for source/status, account, amount/currency, and timestamp.
-- [ ] `matches` table.
-- [ ] `match_events` junction table.
+- [x] `matches` table.
+- [x] `match_events` junction table.
 - [ ] `discrepancies` table.
 - [ ] `metric_snapshots` table.
 - [ ] `counterparty_nodes` table.
@@ -97,9 +124,9 @@ Goal: CORE can ingest correlated events, reconcile them correctly, materialize g
 - [x] `GetEvent` reads canonical events.
 - [ ] `InsertEvent` accepts configurable database URL instead of hardcoded localhost.
 - [ ] Store methods use tenant-scoped queries where relevant.
-- [ ] Match creation persists `matches` and `match_events`.
-- [ ] Match creation updates `match_status`.
-- [ ] Match creation records match score and evidence.
+- [x] Match creation persists `matches` and `match_events`.
+- [x] Match creation updates `match_status`.
+- [x] Match creation records match score and evidence.
 - [ ] Discrepancy creation and resolution methods.
 - [ ] Metric snapshot write/read methods.
 - [ ] Graph node/alias/edge/event upsert methods.
@@ -134,16 +161,16 @@ Goal: CORE can ingest correlated events, reconcile them correctly, materialize g
 
 ### Match Confirmation Transaction
 
-- [ ] `PARTIAL` Serializable transaction is attempted in `ConfirmMatch`.
-- [ ] Verify both events are still `PENDING`.
-- [ ] Insert match row.
-- [ ] Insert match-event rows.
-- [ ] Update both events to `MATCHED`.
+- [x] Serializable transaction implemented in `ConfirmMatch`.
+- [x] Verify both events are still `PENDING`.
+- [x] Insert match row.
+- [x] Insert match-event rows.
+- [x] Update both events to `MATCHED`.
 - [ ] Run entity resolution inside the confirmation transaction.
 - [ ] Upsert graph state inside the confirmation transaction.
 - [ ] Remove Redis candidates after durable commit.
-- [ ] Retry serialization conflicts once.
-- [ ] Ensure replaying the same event cannot create duplicate matches.
+- [x] Retry serialization conflicts once.
+- [x] Ensure replaying the same event cannot create duplicate matches (second confirm fails when status is not `PENDING`).
 
 ### Discrepancies And Late Arrivals
 
