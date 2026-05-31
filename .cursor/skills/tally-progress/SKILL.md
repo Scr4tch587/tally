@@ -1,6 +1,6 @@
 ---
 name: tally-progress
-description: Applies Tally repo coaching, spec adherence, handwrite/generate boundaries, and progress tracking. Use when working in the Tally repository, assessing progress against docs/spec.md, planning or implementing features, reviewing code, or updating docs/progress.md.
+description: Applies Tally repo coaching, spec adherence, handwrite/generate boundaries, and progress tracking. Use when working in the Tally repository, assessing progress against docs/spec.md, planning or implementing features, reviewing code, finishing a section, or updating docs/progress.md.
 ---
 
 # Tally Progress
@@ -42,6 +42,24 @@ After changing the repo:
 4. Leave partial work unchecked and label it `PARTIAL` when useful.
 5. Add or remove blockers based on the actual new state.
 6. Update `Latest Verification` with what was run and the result.
+7. Give Kai a very short suitable commit message for the progress update.
+
+## Section Completion Trigger
+
+When Kai says a section, milestone, checklist area, or feature is done, immediately update `docs/progress.md` without waiting for a separate request.
+
+Do this workflow:
+
+1. Identify the relevant `docs/progress.md` section and spec section.
+2. Inspect the repo state needed to verify completion.
+3. Run the most relevant lightweight verification if available.
+4. Mark completed items only if they satisfy the completion standard below.
+5. Keep unverified or partially wired work unchecked and label it `PARTIAL` if that is the most accurate state.
+6. Update `Current Snapshot`, `Current Blockers`, and `Latest Verification` if the section completion changes them.
+7. Tell Kai exactly what was updated and what remains unchecked.
+8. Give Kai a very short suitable commit message for the progress update.
+
+If Kai says a section is done but the repo state does not support that yet, do not mark it complete. Explain the missing evidence and update the tracker with a blocker or partial note instead.
 
 ## Completion Standard
 
