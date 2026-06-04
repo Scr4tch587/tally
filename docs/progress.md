@@ -52,6 +52,8 @@ Major gaps:
 - [x] `go test ./... -count=1` on 2026-06-04 with Docker Postgres/Redis up and passed.
 - [x] HTTP smoke test on 2026-06-04: health `200`; ledger+processor correlated events returned `201`/`201`, both became `MATCHED`, `matches` stored score/evidence `1`, and Redis candidate keys were removed.
 - [x] HTTP same-source smoke test on 2026-06-04: two ledger events returned `201`/`201`, both remained `PENDING`, no match row was created, and Redis candidate keys remained.
+- [x] `go test ./internal/store -run 'TestInsertEvent|TestConfirmMatch' -v -count=1` on 2026-06-04 with Docker Postgres up: metadata persistence, insert idempotency, match persistence/replay failure, and concurrent shared-event match race passed.
+- [x] `go test ./... -count=1` rerun on 2026-06-04 after adding store race/idempotency tests and passed.
 
 ## Phase 1: CORE Foundations
 
@@ -134,8 +136,8 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [ ] Discrepancy creation and resolution methods.
 - [ ] Metric snapshot write/read methods.
 - [ ] Graph node/alias/edge/event upsert methods.
-- [ ] Tests cover idempotent insert behavior.
-- [ ] Tests cover serializable match race behavior.
+- [x] Tests cover idempotent insert behavior.
+- [x] Tests cover serializable match race behavior.
 
 ### Redis Candidate Window
 
