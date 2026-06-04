@@ -20,6 +20,7 @@ Use `docs/spec.md` as the product/architecture source of truth. Use `docs/coach.
 - Follow `docs/coach.md` interaction style: structured, step-by-step, high-signal, no hype.
 - Do not apply code changes unless Kai explicitly asks for implementation.
 - When a request touches a HANDWRITE zone, push back once with the specific learning or craft reason before generating code. If Kai still wants it, comply.
+- When coaching HANDWRITE or handwrite-adjacent work, do not provide whole function/block code answers unless Kai explicitly asks for them. Prefer small hints, invariants, signatures, pseudocode, tests, or line-level bug descriptions. Even when identifying bugs, explain the fix without pasting the full corrected block unless requested.
 - Generate freely in VIBE-CODE zones, while preserving CORE/PRODUCT boundaries from the spec.
 - Re-read the relevant spec section when the active feature changes.
 - Keep CORE responsible for ledger integrity, reconciliation, entity resolution, graph truth, and graph query semantics.

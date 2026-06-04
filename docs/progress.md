@@ -28,7 +28,7 @@ Implemented so far:
 - Basic Redis candidate add/find/remove helpers exist.
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
 - Serializable `ConfirmMatch` persists `matches` / `match_events`, updates `match_status`, retries once on serialization failure; entity resolution and graph upsert not wired yet.
-- `internal/match` scorer exists but HTTP ingestion still confirms the first Redis candidate without calling `match.Score`.
+- `internal/match` scorer is wired into HTTP ingestion; the handler skips self/same-source candidates, scores all candidates, confirms the top valid match, and removes matched Redis candidates after `ConfirmMatch`.
 
 Major gaps:
 
@@ -40,7 +40,6 @@ Major gaps:
 ## Current Blockers
 
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
-- [ ] HTTP path confirms matches without the handwrite scoring function (false-positive risk).
 ## Latest Verification
 
 - [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.
@@ -49,6 +48,10 @@ Major gaps:
 - [x] `POST /events` smoke test on 2026-05-31: valid insert `201`, duplicate replay `200` without Redis side effects, invalid source `400`, forged idempotency key ignored in DB.
 - [x] `go test ./internal/store` on 2026-05-31 with Docker Postgres up: insert metadata + `ConfirmMatch` integration passed.
 - [x] `go test ./internal/match/...` on 2026-05-31 and passed.
+- [x] `go test ./internal/store -run 'TestCandidateKey|TestCandidateBuckets|TestAddCandidate|TestFindCandidates|TestRemoveCandidate' -v -count=1` on 2026-06-04 with Docker Redis up and passed.
+- [x] `go test ./... -count=1` on 2026-06-04 with Docker Postgres/Redis up and passed.
+- [x] HTTP smoke test on 2026-06-04: health `200`; ledger+processor correlated events returned `201`/`201`, both became `MATCHED`, `matches` stored score/evidence `1`, and Redis candidate keys were removed.
+- [x] HTTP same-source smoke test on 2026-06-04: two ledger events returned `201`/`201`, both remained `PENDING`, no match row was created, and Redis candidate keys remained.
 
 ## Phase 1: CORE Foundations
 
@@ -138,13 +141,13 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 
 - [x] Basic Redis client helper.
 - [x] Basic candidate add/find/remove helpers exist.
-- [ ] Candidate key follows spec: `candidates:{tenant_id}:{asset_code}:{amount_bucket}`.
-- [ ] Candidate scores use event timestamp in Unix millis, not current wall-clock seconds.
-- [ ] Candidate lookup checks exact and adjacent amount buckets.
-- [ ] Candidate lookup excludes same-source candidates.
-- [ ] Candidate lookup is tenant-scoped.
-- [ ] Candidate lookup is asset-scoped.
-- [ ] Matched candidates are removed atomically with match confirmation semantics.
+- [x] Candidate key follows spec: `candidates:{tenant_id}:{asset_code}:{amount_bucket}` with `Currency` fallback when `AssetCode` is empty.
+- [x] Candidate scores use event timestamp in Unix millis, not current wall-clock seconds.
+- [x] Candidate lookup checks exact and adjacent amount buckets.
+- [x] Candidate lookup excludes same-source candidates in the HTTP handler after candidate event load.
+- [x] Candidate lookup is tenant-scoped.
+- [x] Candidate lookup is asset-scoped.
+- [ ] `PARTIAL` Matched candidates are removed after durable `ConfirmMatch`; Redis removal is not part of the Postgres transaction and still needs crash-recovery handling.
 - [ ] Expiry sweep removes aged-out candidates.
 - [ ] Redis rebuild from Postgres pending events on startup.
 
@@ -156,7 +159,7 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [x] Amount score supports exact match and decay to tolerance.
 - [x] Time score supports min (`5s`) and max (`120s`) delta behavior with plateau.
 - [x] Account score supports exact, substring, and mismatch behavior.
-- [ ] Candidate ranking chooses top valid candidate only.
+- [x] Candidate ranking chooses top valid candidate only in HTTP ingestion.
 - [x] False positives are prevented by conservative thresholding and tests (1 minor-unit amount gap scores `0.75`, below threshold).
 - [x] Unit tests cover scorer edge cases (`internal/match/score_test.go`).
 
@@ -169,7 +172,7 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [x] Update both events to `MATCHED`.
 - [ ] Run entity resolution inside the confirmation transaction.
 - [ ] Upsert graph state inside the confirmation transaction.
-- [ ] Remove Redis candidates after durable commit.
+- [x] Remove Redis candidates after durable commit.
 - [x] Retry serialization conflicts once.
 - [x] Ensure replaying the same event cannot create duplicate matches (second confirm fails when status is not `PENDING`).
 

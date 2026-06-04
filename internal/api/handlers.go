@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 	"net/http"
 	"tally/internal/event"
+	"tally/internal/match"
 	"tally/internal/store"
 	"time"
 )
@@ -78,19 +79,47 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := store.FindCandidates(r.Context(), h.Client, ev.Currency, ev.AmountMinor, 60)
+	candidates, err := store.FindCandidates(r.Context(), h.Client, ev, 120000)
 	if err != nil {
 		h.Log.Error().Err(err).Msg("Finding candidates failed")
 		return
 	}
 	h.Log.Info().Int("candidate_count", len(candidates)).Msg("candidates found")
 
+	var bestCandidate *event.CanonicalEvent
+	var bestScore float64
+	var bestEvidence map[string]any
+
 	for _, id := range candidates {
 		h.Log.Info().Str("candidate_id", id).Str("current_event", ev.EventID).Msg("candidate found")
 		if id == ev.EventID {
 			continue
 		}
-		err = store.ConfirmMatch(r.Context(), h.Pool, ev.EventID, id, 0, nil)
+
+		candidateEv, err := store.GetEvent(r.Context(), h.Pool, id)
+		if err != nil {
+			h.Log.Error().Err(err).Msg("Fetching event failed")
+			return
+		}
+
+		if candidateEv.SourceType == ev.SourceType {
+			continue
+		}
+
+		score, evidence, ok := match.Score(ev, candidateEv)
+		if !ok {
+			continue
+		}
+
+		if score > bestScore {
+			bestScore = score
+			bestCandidate = candidateEv
+			bestEvidence = evidence
+		}
+	}
+
+	if bestCandidate != nil {
+		err = store.ConfirmMatch(r.Context(), h.Pool, ev.EventID, bestCandidate.EventID, bestScore, bestEvidence)
 		if err != nil {
 			h.Log.Error().Err(err).Msg("Confirming match failed")
 			return
@@ -100,18 +129,11 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 			h.Log.Error().Err(err).Msg("Removing candidate failed")
 			return
 		}
-
-		tempEv, err := store.GetEvent(r.Context(), h.Pool, id)
-		if err != nil {
-			h.Log.Error().Err(err).Msg("Fetching event failed")
-			return
-		}
-		err = store.RemoveCandidate(r.Context(), h.Client, tempEv)
+		err = store.RemoveCandidate(r.Context(), h.Client, bestCandidate)
 		if err != nil {
 			h.Log.Error().Err(err).Msg("Removing candidate failed")
 			return
 		}
-		break
 	}
 
 	return
