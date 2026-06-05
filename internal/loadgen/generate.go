@@ -121,15 +121,16 @@ func Generate(config Config) (Dataset, error) {
 
 func appendTruePair(dataset *Dataset, tenantID string, baseTime time.Time, i int) {
 	truthID := fmt.Sprintf("truth-%06d", i)
-	ledgerEvent := fmt.Sprintf("evt-ledger-%s", truthID)
-	processorEvent := fmt.Sprintf("evt-processor-%s", truthID)
+	ledgerEvent := eventID(tenantID, "ledger", truthID)
+	processorEvent := eventID(tenantID, "processor", truthID)
 	ledgerTimestamp := baseTime.Add(time.Duration(i) * 10 * time.Second)
+	amountMinor := int64(1000 + i*10)
 	accountRef := fmt.Sprintf("account-%d", i)
 	counterpartyRef := fmt.Sprintf("counterparty-%d", i)
 
 	dataset.Events = append(dataset.Events,
-		generatedEvent(tenantID, ledgerEvent, "ledger", fmt.Sprintf("src-ledger-%s", truthID), 100, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindTruePair),
-		generatedEvent(tenantID, processorEvent, "processor", fmt.Sprintf("src-processor-%s", truthID), 100, ledgerTimestamp.Add(time.Second), accountRef, counterpartyRef, truthID, KindTruePair),
+		generatedEvent(tenantID, ledgerEvent, "ledger", sourceEventID(tenantID, "ledger", truthID), amountMinor, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindTruePair),
+		generatedEvent(tenantID, processorEvent, "processor", sourceEventID(tenantID, "processor", truthID), amountMinor, ledgerTimestamp.Add(time.Second), accountRef, counterpartyRef, truthID, KindTruePair),
 	)
 
 	key := PairKey(ledgerEvent, processorEvent)
@@ -148,8 +149,8 @@ func appendSameSourceDecoy(dataset *Dataset, tenantID string, baseTime time.Time
 	counterpartyRef := fmt.Sprintf("counterparty-same-source-decoy-%d", i)
 
 	dataset.Events = append(dataset.Events,
-		generatedEvent(tenantID, fmt.Sprintf("evt-ledger-a-%s", truthID), "ledger", fmt.Sprintf("src-ledger-a-%s", truthID), 20000, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindSameSourceDecoy),
-		generatedEvent(tenantID, fmt.Sprintf("evt-ledger-b-%s", truthID), "ledger", fmt.Sprintf("src-ledger-b-%s", truthID), 20000, ledgerTimestamp.Add(time.Second), accountRef, counterpartyRef, truthID, KindSameSourceDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "ledger-a", truthID), "ledger", sourceEventID(tenantID, "ledger-a", truthID), 20000, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindSameSourceDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "ledger-b", truthID), "ledger", sourceEventID(tenantID, "ledger-b", truthID), 20000, ledgerTimestamp.Add(time.Second), accountRef, counterpartyRef, truthID, KindSameSourceDecoy),
 	)
 }
 
@@ -160,8 +161,8 @@ func appendAmountDecoy(dataset *Dataset, tenantID string, baseTime time.Time, i 
 	counterpartyRef := fmt.Sprintf("counterparty-amount-decoy-%d", i)
 
 	dataset.Events = append(dataset.Events,
-		generatedEvent(tenantID, fmt.Sprintf("evt-ledger-%s", truthID), "ledger", fmt.Sprintf("src-ledger-%s", truthID), 10000, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindAmountDecoy),
-		generatedEvent(tenantID, fmt.Sprintf("evt-processor-%s", truthID), "processor", fmt.Sprintf("src-processor-%s", truthID), 10500, ledgerTimestamp.Add(time.Second), accountRef, counterpartyRef, truthID, KindAmountDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "ledger", truthID), "ledger", sourceEventID(tenantID, "ledger", truthID), 10000, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindAmountDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "processor", truthID), "processor", sourceEventID(tenantID, "processor", truthID), 10500, ledgerTimestamp.Add(time.Second), accountRef, counterpartyRef, truthID, KindAmountDecoy),
 	)
 }
 
@@ -171,8 +172,8 @@ func appendAccountDecoy(dataset *Dataset, tenantID string, baseTime time.Time, i
 	counterpartyRef := fmt.Sprintf("counterparty-account-decoy-%d", i)
 
 	dataset.Events = append(dataset.Events,
-		generatedEvent(tenantID, fmt.Sprintf("evt-ledger-%s", truthID), "ledger", fmt.Sprintf("src-ledger-%s", truthID), 10000, ledgerTimestamp, fmt.Sprintf("account-decoy-ledger-%d", i), counterpartyRef, truthID, KindAccountDecoy),
-		generatedEvent(tenantID, fmt.Sprintf("evt-processor-%s", truthID), "processor", fmt.Sprintf("src-processor-%s", truthID), 10000, ledgerTimestamp.Add(time.Second), fmt.Sprintf("account-decoy-processor-%d", i), counterpartyRef, truthID, KindAccountDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "ledger", truthID), "ledger", sourceEventID(tenantID, "ledger", truthID), 10000, ledgerTimestamp, fmt.Sprintf("account-decoy-ledger-%d", i), counterpartyRef, truthID, KindAccountDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "processor", truthID), "processor", sourceEventID(tenantID, "processor", truthID), 10000, ledgerTimestamp.Add(time.Second), fmt.Sprintf("account-decoy-processor-%d", i), counterpartyRef, truthID, KindAccountDecoy),
 	)
 }
 
@@ -183,8 +184,8 @@ func appendTimeDecoy(dataset *Dataset, tenantID string, baseTime time.Time, i in
 	counterpartyRef := fmt.Sprintf("counterparty-time-decoy-%d", i)
 
 	dataset.Events = append(dataset.Events,
-		generatedEvent(tenantID, fmt.Sprintf("evt-ledger-%s", truthID), "ledger", fmt.Sprintf("src-ledger-%s", truthID), 10000, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindTimeDecoy),
-		generatedEvent(tenantID, fmt.Sprintf("evt-processor-%s", truthID), "processor", fmt.Sprintf("src-processor-%s", truthID), 10000, ledgerTimestamp.Add(10*time.Minute), accountRef, counterpartyRef, truthID, KindTimeDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "ledger", truthID), "ledger", sourceEventID(tenantID, "ledger", truthID), 10000, ledgerTimestamp, accountRef, counterpartyRef, truthID, KindTimeDecoy),
+		generatedEvent(tenantID, eventID(tenantID, "processor", truthID), "processor", sourceEventID(tenantID, "processor", truthID), 10000, ledgerTimestamp.Add(10*time.Minute), accountRef, counterpartyRef, truthID, KindTimeDecoy),
 	)
 }
 
@@ -215,4 +216,12 @@ func generatedEvent(
 		TruthID:         truthID,
 		Kind:            kind,
 	}
+}
+
+func eventID(tenantID string, source string, truthID string) string {
+	return fmt.Sprintf("evt-%s-%s-%s", tenantID, source, truthID)
+}
+
+func sourceEventID(tenantID string, source string, truthID string) string {
+	return fmt.Sprintf("src-%s-%s-%s", tenantID, source, truthID)
 }

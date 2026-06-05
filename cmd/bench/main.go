@@ -43,6 +43,11 @@ type postResult struct {
 	CompletedAt time.Time
 }
 
+type pollResult struct {
+	matches []bench.ObservedMatch
+	err     error
+}
+
 func main() {
 	cfg := parseFlags()
 	ctx := context.Background()
@@ -193,15 +198,24 @@ func runBenchmark(ctx context.Context, cfg config, reset bool) (bench.Report, er
 		}
 	}
 
+	postDone := make(chan struct{})
+	pollResults := make(chan pollResult, 1)
+	go func() {
+		matches, err := pollMatchesDuringRun(ctx, pool, runID, dataset.GroundTruth, cfg.pollInterval, cfg.maxWait, postDone)
+		pollResults <- pollResult{matches: matches, err: err}
+	}()
+
 	startedAt := time.Now()
 	postResults := postEvents(ctx, cfg.baseURL, dataset.Events, cfg.workers)
 	duration := time.Since(startedAt)
+	close(postDone)
 
 	httpErrors := countPostErrors(postResults)
-	observedMatches, err := pollMatches(ctx, pool, runID, dataset.GroundTruth, cfg.pollInterval, cfg.maxWait)
-	if err != nil {
-		return bench.Report{}, err
+	polled := <-pollResults
+	if polled.err != nil {
+		return bench.Report{}, polled.err
 	}
+	observedMatches := polled.matches
 
 	observedMatches = mergeObservedMatches(observedMatches, queryMatchesBestEffort(ctx, pool, runID))
 	benchPostResults := make([]bench.PostResult, 0, len(postResults))
@@ -305,6 +319,12 @@ func postEvent(ctx context.Context, client *http.Client, baseURL string, event l
 }
 
 func pollMatches(ctx context.Context, pool *pgxpool.Pool, tenantID string, truth loadgen.GroundTruth, interval time.Duration, maxWait time.Duration) ([]bench.ObservedMatch, error) {
+	postDone := make(chan struct{})
+	close(postDone)
+	return pollMatchesDuringRun(ctx, pool, tenantID, truth, interval, maxWait, postDone)
+}
+
+func pollMatchesDuringRun(ctx context.Context, pool *pgxpool.Pool, tenantID string, truth loadgen.GroundTruth, interval time.Duration, maxWait time.Duration, postDone <-chan struct{}) ([]bench.ObservedMatch, error) {
 	if interval <= 0 {
 		interval = 10 * time.Millisecond
 	}
@@ -312,11 +332,12 @@ func pollMatches(ctx context.Context, pool *pgxpool.Pool, tenantID string, truth
 		maxWait = 30 * time.Second
 	}
 
-	deadline := time.Now().Add(maxWait)
 	observed := make(map[string]bench.ObservedMatch)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	var deadline time.Time
+	postingDone := false
 	for {
 		matches, err := queryMatches(ctx, pool, tenantID, time.Now())
 		if err != nil {
@@ -331,13 +352,19 @@ func pollMatches(ctx context.Context, pool *pgxpool.Pool, tenantID string, truth
 		if observedExpectedCount(observed, truth) == len(truth.Expected) {
 			return observedSlice(observed), nil
 		}
-		if time.Now().After(deadline) {
+		if postingDone && time.Now().After(deadline) {
 			return observedSlice(observed), nil
 		}
 
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-postDone:
+			if !postingDone {
+				postingDone = true
+				deadline = time.Now().Add(maxWait)
+				postDone = nil
+			}
 		case <-ticker.C:
 		}
 	}

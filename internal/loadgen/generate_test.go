@@ -135,6 +135,35 @@ func TestGenerateIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestGenerateScopesEventIDsByTenant(t *testing.T) {
+	first, err := Generate(Config{
+		TenantID:  "tenant-1",
+		Seed:      42,
+		TruePairs: 1,
+		Arrival:   ArrivalModePaired,
+	})
+	if err != nil {
+		t.Fatalf("first generate returned error: %v", err)
+	}
+
+	second, err := Generate(Config{
+		TenantID:  "tenant-2",
+		Seed:      42,
+		TruePairs: 1,
+		Arrival:   ArrivalModePaired,
+	})
+	if err != nil {
+		t.Fatalf("second generate returned error: %v", err)
+	}
+
+	if first.Events[0].EventID == second.Events[0].EventID {
+		t.Fatalf("expected different tenant event IDs, got %q", first.Events[0].EventID)
+	}
+	if first.Events[0].SourceEventID == second.Events[0].SourceEventID {
+		t.Fatalf("expected different tenant source event IDs, got %q", first.Events[0].SourceEventID)
+	}
+}
+
 func TestGenerateRejectsInvalidConfig(t *testing.T) {
 	tests := []struct {
 		name   string
