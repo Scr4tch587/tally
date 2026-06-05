@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"tally/internal/api"
 	"tally/internal/logger"
+	"tally/internal/reconcile"
 	"tally/internal/store"
 	"time"
 )
@@ -31,7 +32,8 @@ func main() {
 
 	log.Info().Msg("postgres ok")
 	client := store.NewRedisClient()
-	h := api.NewHandler(pool, log, client)
+	engine := reconcile.NewEngine(pool, log, client)
+	h := api.NewHandler(pool, log, client, engine)
 	r := api.NewRouter(h)
 	log.Info().Msg("server listening on :8080")
 

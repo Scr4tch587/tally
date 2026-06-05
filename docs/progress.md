@@ -42,7 +42,29 @@ Major gaps:
 ## Current Blockers
 
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
-- [ ] Shuffled / multi-worker benchmark runs are not clean yet: after ranked-candidate retry, shuffled 16-worker 100-pair run missed 9 true matches; paired 16-worker 100-pair run missed 45 true matches. Current resume-ready number is paired single-worker only.
+- [ ] `HIGHEST PRIORITY` Fix concurrent reconciliation so shuffled / multi-worker benchmark runs are clean. After ranked-candidate retry, shuffled 16-worker 100-pair run missed 9 true matches; paired 16-worker 100-pair run missed 45 true matches. Current resume-ready number is paired single-worker only.
+
+## Highest Priority: Concurrent Reconciliation Fix
+
+Planning doc for fresh agent context: `/Users/scr4tch/.cursor/plans/tally_concurrent_reconciliation_fix.plan.md`.
+
+Diagnosis: the current ingestion matcher is request-local. Each `POST /events` inserts one event, adds it to Redis, performs one candidate lookup, and then returns. Under concurrent arrival, two counterpart requests can both insert successfully but each perform its only lookup before the other side is visible in Redis. Both events then remain `PENDING` until some future unrelated event happens to trigger another lookup. `ConfirmMatch` itself is doing the right durable guard work; the missing piece is a reconciliation loop that retries pending events from Postgres truth.
+
+Definitive path:
+
+1. Extract reusable reconciliation orchestration out of `internal/api/handlers.go` into a small CORE-owned package, likely `internal/reconcile`.
+2. Add a Postgres pending-candidate query for one event: same tenant, opposite source, pending status, same asset/currency, exact or adjacent amount bucket, and timestamp within the scorer window. Redis can stay as a fast cache, but Postgres must be the correctness fallback/source of truth.
+3. Make `POST /events` insert the event, update Redis, then call `ReconcilePendingEvent(event_id)` using the Postgres candidate query. This removes the Redis visibility race from the normal path.
+4. Add a background pending reconciliation worker that periodically scans recent `PENDING` events and calls the same `ReconcilePendingEvent` function. This closes request-order gaps, supports shuffled/concurrent arrival, and becomes the foundation for crash recovery.
+5. Keep `ConfirmMatch` as the only durable state transition. Do not lower thresholds, bypass the scorer, or match inside Redis.
+
+Acceptance gates:
+
+- A deterministic test reproduces two counterpart events inserted concurrently where both initial Redis lookups can miss, then verifies the reconciliation pass matches them.
+- `make bench PAIRS=100 WORKERS=16 ARRIVAL=paired` is clean: 100% match rate, 0 false positives, 0 HTTP errors.
+- `make bench PAIRS=100 WORKERS=16 ARRIVAL=shuffled` is clean under the same gates.
+- Re-run stepped `make bench-load` with `WORKERS=16 ARRIVAL=shuffled` and record the new highest clean run.
+- The existing paired single-worker resume result remains clean or improves.
 ## Latest Verification
 
 - [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.

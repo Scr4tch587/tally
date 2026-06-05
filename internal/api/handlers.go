@@ -7,10 +7,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"net/http"
-	"sort"
-	"strings"
 	"tally/internal/event"
-	"tally/internal/match"
+	"tally/internal/reconcile"
 	"tally/internal/store"
 	"time"
 )
@@ -19,12 +17,7 @@ type Handler struct {
 	Pool   *pgxpool.Pool
 	Log    zerolog.Logger
 	Client *redis.Client
-}
-
-type rankedCandidate struct {
-	Event    *event.CanonicalEvent
-	Score    float64
-	Evidence map[string]any
+	rec    *reconcile.Engine
 }
 
 type PostEventRequest struct {
@@ -87,70 +80,11 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidates, err := store.FindCandidates(r.Context(), h.Client, ev, 120000)
+	err = h.rec.ReconcilePendingEvent(r.Context(), ev.EventID)
 	if err != nil {
-		h.Log.Error().Err(err).Msg("Finding candidates failed")
+		h.Log.Error().Err(err).Msg("Reconciling event failed")
 		return
 	}
-	h.Log.Info().Int("candidate_count", len(candidates)).Msg("candidates found")
-
-	rankedCandidates := make([]rankedCandidate, 0, len(candidates))
-
-	for _, id := range candidates {
-		h.Log.Info().Str("candidate_id", id).Str("current_event", ev.EventID).Msg("candidate found")
-		if id == ev.EventID {
-			continue
-		}
-
-		candidateEv, err := store.GetEvent(r.Context(), h.Pool, id)
-		if err != nil {
-			h.Log.Error().Err(err).Msg("Fetching event failed")
-			return
-		}
-
-		if candidateEv.SourceType == ev.SourceType {
-			continue
-		}
-
-		score, evidence, ok := match.Score(ev, candidateEv)
-		if !ok {
-			continue
-		}
-
-		rankedCandidates = append(rankedCandidates, rankedCandidate{
-			Event:    candidateEv,
-			Score:    score,
-			Evidence: evidence,
-		})
-	}
-
-	sort.Slice(rankedCandidates, func(i, j int) bool {
-		return rankedCandidates[i].Score > rankedCandidates[j].Score
-	})
-
-	for _, candidate := range rankedCandidates {
-		err = store.ConfirmMatch(r.Context(), h.Pool, ev.EventID, candidate.Event.EventID, candidate.Score, candidate.Evidence)
-		if err != nil {
-			h.Log.Info().Err(err).Str("candidate_id", candidate.Event.EventID).Msg("confirming ranked candidate failed")
-			if strings.Contains(err.Error(), "is not pending") {
-				continue
-			}
-			return
-		}
-		err = store.RemoveCandidate(r.Context(), h.Client, ev)
-		if err != nil {
-			h.Log.Error().Err(err).Msg("Removing candidate failed")
-			return
-		}
-		err = store.RemoveCandidate(r.Context(), h.Client, candidate.Event)
-		if err != nil {
-			h.Log.Error().Err(err).Msg("Removing candidate failed")
-			return
-		}
-		break
-	}
-
-	return
 }
 
 func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
@@ -164,8 +98,8 @@ func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ev)
 }
 
-func NewHandler(p *pgxpool.Pool, l zerolog.Logger, r *redis.Client) *Handler {
-	return &Handler{p, l, r}
+func NewHandler(p *pgxpool.Pool, l zerolog.Logger, r *redis.Client, rec *reconcile.Engine) *Handler {
+	return &Handler{Pool: p, Log: l, Client: r, rec: rec}
 }
 
 func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
