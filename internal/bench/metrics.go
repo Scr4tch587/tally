@@ -122,3 +122,10 @@ func later(a, b time.Time) time.Time {
 	}
 	return a
 }
+
+func ThroughputEventsPerSecond(eventsPosted int, duration time.Duration) float64 {
+	if duration <= 0 {
+		return 0
+	}
+	return float64(eventsPosted) / duration.Seconds()
+}

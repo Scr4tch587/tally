@@ -184,6 +184,23 @@ func TestComputeLatencyMetricsSkipsIncompleteInputs(t *testing.T) {
 	}
 }
 
+func TestThroughputEventsPerSecond(t *testing.T) {
+	got := ThroughputEventsPerSecond(100, 2*time.Second)
+	if got != 50 {
+		t.Fatalf("expected throughput 50, got %f", got)
+	}
+}
+
+func TestThroughputEventsPerSecondHandlesNonPositiveDuration(t *testing.T) {
+	if got := ThroughputEventsPerSecond(100, 0); got != 0 {
+		t.Fatalf("expected zero duration throughput 0, got %f", got)
+	}
+
+	if got := ThroughputEventsPerSecond(100, -time.Second); got != 0 {
+		t.Fatalf("expected negative duration throughput 0, got %f", got)
+	}
+}
+
 func correctnessDataset(eventIDs ...string) loadgen.Dataset {
 	expected := make(map[string]loadgen.ExpectedMatch)
 	for i := 0; i < len(eventIDs); i += 2 {
