@@ -42,7 +42,7 @@ Major gaps:
 ## Current Blockers
 
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
-- [ ] Shuffled / multi-worker benchmark runs are not clean yet: shuffled 16-worker 100-pair run missed 5 true matches; paired 16-worker 100-pair run missed 45 true matches. Current resume-ready number is paired single-worker only.
+- [ ] Shuffled / multi-worker benchmark runs are not clean yet: after ranked-candidate retry, shuffled 16-worker 100-pair run missed 9 true matches; paired 16-worker 100-pair run missed 45 true matches. Current resume-ready number is paired single-worker only.
 ## Latest Verification
 
 - [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.
@@ -64,6 +64,7 @@ Major gaps:
 - [x] `go test ./... -count=1` rerun on 2026-06-04 after run-scoped benchmark event IDs and concurrent match polling changes passed.
 - [x] Live paired single-worker benchmark on 2026-06-04: 100 true pairs / 520 total events, 249.34 events/sec, 8ms p99, 100% match rate, 0 false positives.
 - [x] Live refined paired single-worker load benchmark on 2026-06-04 stopped at first non-clean step: best clean run 160 true pairs / 832 total events, 237.01 events/sec, 8ms p99, 100% match rate, 0 false positives; 165 true pairs produced 1 false positive.
+- [x] Ranked-candidate retry experiment on 2026-06-05 did not fix concurrent benchmark cleanliness: shuffled 16-worker 100-pair run had 91% match rate, paired 16-worker 100-pair run had 55% match rate.
 
 ## Phase 1: CORE Foundations
 
