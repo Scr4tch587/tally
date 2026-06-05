@@ -29,17 +29,19 @@ Implemented so far:
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
 - Serializable `ConfirmMatch` persists `matches` / `match_events`, updates `match_status`, retries once on serialization failure; entity resolution and graph upsert not wired yet.
 - `internal/match` scorer is wired into HTTP ingestion; the handler skips self/same-source candidates, scores all candidates, confirms the top valid match, and removes matched Redis candidates after `ConfirmMatch`.
+- Deterministic benchmark input generation, benchmark metric computation, JSON reports, `cmd/bench`, `make bench`, and `make bench-load` exist; live measured resume numbers have not been produced yet.
 
 Major gaps:
 
 - `go test ./...` passes when local Postgres/Redis are running; fails on store integration test when Docker is down.
 - The matching pipeline is incomplete.
-- Match tables, discrepancy tables, metric snapshots, graph tables, entity resolution, gRPC graph API, benchmark harness, product app, sandbox, and deployment infra are not implemented.
+- Discrepancy tables, metric snapshots, graph tables, entity resolution, gRPC graph API, live benchmark reports, product app, sandbox, and deployment infra are not implemented.
 - README still describes the older reconciliation-only shape more than the current graph + product spec.
 
 ## Current Blockers
 
 - [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
+- [ ] Live `make bench` / `make bench-load` verification requires the CORE HTTP server on `localhost:8080`; latest `/health` probe returned no server.
 ## Latest Verification
 
 - [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.
@@ -54,6 +56,10 @@ Major gaps:
 - [x] HTTP same-source smoke test on 2026-06-04: two ledger events returned `201`/`201`, both remained `PENDING`, no match row was created, and Redis candidate keys remained.
 - [x] `go test ./internal/store -run 'TestInsertEvent|TestConfirmMatch' -v -count=1` on 2026-06-04 with Docker Postgres up: metadata persistence, insert idempotency, match persistence/replay failure, and concurrent shared-event match race passed.
 - [x] `go test ./... -count=1` rerun on 2026-06-04 after adding store race/idempotency tests and passed.
+- [x] `go test ./cmd/bench ./internal/bench ./internal/loadgen -count=1` on 2026-06-04 after adding benchmark harness packages and passed.
+- [x] `go test ./... -count=1` on 2026-06-04 after adding `cmd/bench`, `internal/bench`, `internal/loadgen`, and Make targets passed.
+- [x] `go run ./cmd/bench -h` on 2026-06-04 printed the expected correctness/load benchmark flags.
+- [ ] Live benchmark run on 2026-06-04 was not attempted because `curl http://localhost:8080/health` returned no server (`000`).
 
 ## Phase 1: CORE Foundations
 
@@ -70,7 +76,7 @@ Required floor:
 - [ ] Match Confirmation Transaction is implemented with `SERIALIZABLE` semantics.
 - [x] Match blockers are resolved (`match_status` column, migrations present).
 - [x] `matches` and `match_events` tables exist and are used by the normal match path.
-- [ ] Benchmark Harness measures throughput, p99 latency, match rate, and false positive rate.
+- [ ] `PARTIAL` Benchmark Harness computes throughput, p99 latency, match rate, and false positive rate; live HTTP benchmark run still needs verification.
 - [ ] Resume-ready numbers are produced by the benchmark harness, not estimated.
 
 Strong tier-two adds before swapping if timing allows:
@@ -268,20 +274,20 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 ### Benchmark Harness
 
 - [ ] `cmd/loadgen` exists.
-- [ ] `cmd/bench` exists.
-- [ ] `make bench`.
+- [x] `cmd/bench` exists.
+- [x] `make bench`.
 - [ ] `make bench TPS=5000 DUR=600`.
 - [ ] `make bench-crash`.
 - [ ] Ground-truth table for generated transactions.
-- [ ] Sustained throughput measurement.
-- [ ] Match latency p50/p95/p99.
-- [ ] Match rate against ground truth.
-- [ ] False positive rate.
+- [x] Sustained throughput measurement.
+- [x] Match latency p50/p95/p99.
+- [x] Match rate against ground truth.
+- [x] False positive rate.
 - [ ] Discrepancy detection time.
 - [ ] Crash recovery time.
 - [ ] Entity resolution precision.
 - [ ] Graph query latency for required gRPC methods.
-- [ ] Benchmark report sections match the spec.
+- [ ] `PARTIAL` Benchmark report includes correctness/load JSON shape and core resume-gate metrics; live report output still needs verification.
 
 ## Phase 2: Multi-Tenant Sandbox Foundation
 

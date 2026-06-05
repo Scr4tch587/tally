@@ -331,6 +331,9 @@ func TestGenerateCreatesSameSourceDecoys(t *testing.T) {
 		if event.SourceType != "ledger" {
 			t.Fatalf("expected same-source decoy to use ledger source, got %q", event.SourceType)
 		}
+		if event.AccountRef == "account-0" || event.AccountRef == "account-1" {
+			t.Fatalf("expected same-source decoy account %q to be isolated from true-pair accounts", event.AccountRef)
+		}
 	}
 }
 
