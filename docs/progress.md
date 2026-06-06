@@ -1,6 +1,6 @@
 # Tally Progress Tracker
 
-Last assessed: 2026-05-31
+Last assessed: 2026-06-05
 
 This document tracks implementation progress against `docs/spec.md`. Update it after every meaningful repo change so the next work session starts from reality, not memory.
 
@@ -28,43 +28,43 @@ Implemented so far:
 - Basic Redis candidate add/find/remove helpers exist.
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
 - Serializable `ConfirmMatch` persists `matches` / `match_events`, updates `match_status`, retries once on serialization failure; entity resolution and graph upsert not wired yet.
-- `internal/match` scorer is wired into HTTP ingestion; the handler skips self/same-source candidates, scores all candidates, confirms the top valid match, and removes matched Redis candidates after `ConfirmMatch`.
+- `internal/reconcile` owns matching orchestration: Postgres-backed pending candidate lookup, scoring, `ConfirmMatch`, and Redis cleanup.
+- `POST /events` inserts, adds to Redis, then calls `ReconcilePendingEvent`; the engine is constructed once in `main.go`.
+- Background pending reconciliation worker (`StartPendingWorker`, 250ms interval, 500-event batch) retries recent `PENDING` events.
+- Store methods `FindPendingMatchCandidates` and `FindRecentPendingEvents` query durable Postgres state for reconciliation.
 - Deterministic benchmark input generation, benchmark metric computation, JSON reports, `cmd/bench`, `make bench`, and `make bench-load` exist.
-- Best clean benchmark run so far: paired arrival, 1 worker, 160 true pairs / 832 total events, 237.01 events/sec, 8ms p99 match latency, 100% match rate, 0 false positives.
+- Best clean benchmark run so far: shuffled arrival, 16 workers, 160 true pairs / 832 total events, 1615.23 events/sec, 958ms p99 match latency, 100% match rate, 0 false positives.
 
 Major gaps:
 
 - `go test ./...` passes when local Postgres/Redis are running; fails on store integration test when Docker is down.
-- The matching pipeline is incomplete.
 - Discrepancy tables, metric snapshots, graph tables, entity resolution, gRPC graph API, product app, sandbox, and deployment infra are not implemented.
-- README still describes the older reconciliation-only shape more than the current graph + product spec.
+- Full crash recovery (startup Redis rebuild, expiry catch-up) is not implemented; the pending worker is the first retry primitive only.
+- Load ceiling on seed 42: first false positive at 165 true pairs under shuffled 16-worker ingestion.
 
 ## Current Blockers
 
-- [ ] `internal/store/postgres_test.go` requires local Postgres on `localhost:5432`; tests fail when Docker services are not running.
-- [ ] `HIGHEST PRIORITY` Fix concurrent reconciliation so shuffled / multi-worker benchmark runs are clean. After ranked-candidate retry, shuffled 16-worker 100-pair run missed 9 true matches; paired 16-worker 100-pair run missed 45 true matches. Current resume-ready number is paired single-worker only.
+- [ ] `internal/store/postgres_test.go` and `internal/reconcile` integration tests require local Postgres on `localhost:5432`; tests fail when Docker services are not running.
 
-## Highest Priority: Concurrent Reconciliation Fix
+## Resolved: Concurrent Reconciliation Fix (2026-06-05)
 
-Planning doc for fresh agent context: `/Users/scr4tch/.cursor/plans/tally_concurrent_reconciliation_fix.plan.md`.
+Planning doc: `/Users/scr4tch/.cursor/plans/tally_concurrent_reconciliation_fix.plan.md`.
 
-Diagnosis: the current ingestion matcher is request-local. Each `POST /events` inserts one event, adds it to Redis, performs one candidate lookup, and then returns. Under concurrent arrival, two counterpart requests can both insert successfully but each perform its only lookup before the other side is visible in Redis. Both events then remain `PENDING` until some future unrelated event happens to trigger another lookup. `ConfirmMatch` itself is doing the right durable guard work; the missing piece is a reconciliation loop that retries pending events from Postgres truth.
+Implemented path:
 
-Definitive path:
+1. Extracted reconciliation orchestration into `internal/reconcile`.
+2. Added Postgres pending-candidate query (`FindPendingMatchCandidates`) as correctness fallback to Redis.
+3. Wired `POST /events` to call `ReconcilePendingEvent` after insert/Redis update.
+4. Added background pending reconciliation worker (`StartPendingWorker` in `main.go`).
+5. Kept `ConfirmMatch` as the only durable state transition; no threshold or scorer changes.
 
-1. Extract reusable reconciliation orchestration out of `internal/api/handlers.go` into a small CORE-owned package, likely `internal/reconcile`.
-2. Add a Postgres pending-candidate query for one event: same tenant, opposite source, pending status, same asset/currency, exact or adjacent amount bucket, and timestamp within the scorer window. Redis can stay as a fast cache, but Postgres must be the correctness fallback/source of truth.
-3. Make `POST /events` insert the event, update Redis, then call `ReconcilePendingEvent(event_id)` using the Postgres candidate query. This removes the Redis visibility race from the normal path.
-4. Add a background pending reconciliation worker that periodically scans recent `PENDING` events and calls the same `ReconcilePendingEvent` function. This closes request-order gaps, supports shuffled/concurrent arrival, and becomes the foundation for crash recovery.
-5. Keep `ConfirmMatch` as the only durable state transition. Do not lower thresholds, bypass the scorer, or match inside Redis.
+Acceptance gates (all passed 2026-06-05):
 
-Acceptance gates:
-
-- A deterministic test reproduces two counterpart events inserted concurrently where both initial Redis lookups can miss, then verifies the reconciliation pass matches them.
-- `make bench PAIRS=100 WORKERS=16 ARRIVAL=paired` is clean: 100% match rate, 0 false positives, 0 HTTP errors.
-- `make bench PAIRS=100 WORKERS=16 ARRIVAL=shuffled` is clean under the same gates.
-- Re-run stepped `make bench-load` with `WORKERS=16 ARRIVAL=shuffled` and record the new highest clean run.
-- The existing paired single-worker resume result remains clean or improves.
+- [x] Deterministic reconcile tests: Postgres-only match without Redis candidates; batch `ReconcileRecentPending` matches pending pairs.
+- [x] `make bench PAIRS=100 WORKERS=16 ARRIVAL=paired` clean: 100% match rate, 0 false positives, 0 HTTP errors.
+- [x] `make bench PAIRS=100 WORKERS=16 ARRIVAL=shuffled` clean under the same gates.
+- [x] Stepped load with `WORKERS=16 ARRIVAL=shuffled`: highest clean run 160 true pairs / 832 total events; first non-clean step 165 true pairs (1 false positive).
+- [x] Prior paired single-worker resume result remains clean (160 pairs / 832 events, 237 events/sec, 8ms p99).
 ## Latest Verification
 
 - [x] `go test ./...` run on 2026-05-31 with Docker Postgres up and passed.
@@ -87,6 +87,12 @@ Acceptance gates:
 - [x] Live paired single-worker benchmark on 2026-06-04: 100 true pairs / 520 total events, 249.34 events/sec, 8ms p99, 100% match rate, 0 false positives.
 - [x] Live refined paired single-worker load benchmark on 2026-06-04 stopped at first non-clean step: best clean run 160 true pairs / 832 total events, 237.01 events/sec, 8ms p99, 100% match rate, 0 false positives; 165 true pairs produced 1 false positive.
 - [x] Ranked-candidate retry experiment on 2026-06-05 did not fix concurrent benchmark cleanliness: shuffled 16-worker 100-pair run had 91% match rate, paired 16-worker 100-pair run had 55% match rate.
+- [x] `go test ./... -count=1` on 2026-06-05 after `internal/reconcile` extraction and Postgres pending-candidate query passed.
+- [x] Store tests for `FindPendingMatchCandidates` and `FindRecentPendingEvents` on 2026-06-05 passed.
+- [x] Reconcile tests on 2026-06-05: Postgres-only match without Redis candidates, unmatched event restored to Redis, `ReconcileRecentPending` matches pending pairs.
+- [x] Live concurrent benchmarks on 2026-06-05 with worker enabled: paired 16-worker 100-pair and shuffled 16-worker 100-pair both 100% match rate, 0 false positives, 0 missed, 0 HTTP errors.
+- [x] Stepped load benchmark on 2026-06-05 (shuffled, 16 workers): best clean run 160 true pairs / 832 total events, 1615.23 events/sec, 958ms p99; first non-clean step 165 true pairs (1 false positive).
+- [x] `README.md` updated on 2026-06-05 to reflect reconciliation engine, worker, and new benchmark numbers.
 
 ## Phase 1: CORE Foundations
 
@@ -98,9 +104,9 @@ This is the point where Tally can credibly replace Wisp on the resume: the match
 
 Required floor:
 
-- [ ] Redis Candidate Window is implemented to spec.
-- [ ] Event-Level Matching is implemented and tested.
-- [ ] Match Confirmation Transaction is implemented with `SERIALIZABLE` semantics.
+- [x] Redis Candidate Window is implemented to spec.
+- [x] Event-Level Matching is implemented and tested.
+- [x] Match Confirmation Transaction is implemented with `SERIALIZABLE` semantics.
 - [x] Match blockers are resolved (`match_status` column, migrations present).
 - [x] `matches` and `match_events` tables exist and are used by the normal match path.
 - [x] Benchmark Harness measures throughput, p99 latency, match rate, and false positive rate.
@@ -108,7 +114,7 @@ Required floor:
 
 Strong tier-two adds before swapping if timing allows:
 
-- [ ] Crash Recovery and Idempotency are implemented and benchmarked.
+- [ ] `PARTIAL` Crash Recovery and Idempotency: pending worker retries recent `PENDING` events; startup Redis rebuild and expiry catch-up not implemented.
 - [ ] Discrepancies and Late Arrivals are implemented and measured.
 - [ ] Benchmark Harness reports crash recovery time and discrepancy detection time.
 
@@ -161,6 +167,8 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [x] Basic Postgres connection helper.
 - [x] `InsertEvent` writes canonical events with `ON CONFLICT DO NOTHING`.
 - [x] `GetEvent` reads canonical events.
+- [x] `FindPendingMatchCandidates` returns pending cross-source candidates from Postgres for one event.
+- [x] `FindRecentPendingEvents` returns recent pending event IDs for worker retry.
 - [ ] `InsertEvent` accepts configurable database URL instead of hardcoded localhost.
 - [ ] Store methods use tenant-scoped queries where relevant.
 - [x] Match creation persists `matches` and `match_events`.
@@ -171,6 +179,8 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [ ] Graph node/alias/edge/event upsert methods.
 - [x] Tests cover idempotent insert behavior.
 - [x] Tests cover serializable match race behavior.
+- [x] Tests cover `FindPendingMatchCandidates` tenant/asset/amount/time filtering.
+- [x] Tests cover `FindRecentPendingEvents` pending-only results and limit.
 
 ### Redis Candidate Window
 
@@ -179,10 +189,11 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [x] Candidate key follows spec: `candidates:{tenant_id}:{asset_code}:{amount_bucket}` with `Currency` fallback when `AssetCode` is empty.
 - [x] Candidate scores use event timestamp in Unix millis, not current wall-clock seconds.
 - [x] Candidate lookup checks exact and adjacent amount buckets.
-- [x] Candidate lookup excludes same-source candidates in the HTTP handler after candidate event load.
+- [x] Candidate lookup excludes same-source candidates in reconciliation after candidate load.
 - [x] Candidate lookup is tenant-scoped.
 - [x] Candidate lookup is asset-scoped.
-- [ ] `PARTIAL` Matched candidates are removed after durable `ConfirmMatch`; Redis removal is not part of the Postgres transaction and still needs crash-recovery handling.
+- [x] Matched candidates are removed after durable `ConfirmMatch` in `internal/reconcile`; Redis removal is not part of the Postgres transaction.
+- [x] Unmatched pending events are re-added to Redis after reconciliation when no match confirms.
 - [ ] Expiry sweep removes aged-out candidates.
 - [ ] Redis rebuild from Postgres pending events on startup.
 
@@ -194,9 +205,10 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [x] Amount score supports exact match and decay to tolerance.
 - [x] Time score supports min (`5s`) and max (`120s`) delta behavior with plateau.
 - [x] Account score supports exact, substring, and mismatch behavior.
-- [x] Candidate ranking chooses top valid candidate only in HTTP ingestion.
+- [x] Candidate ranking chooses top valid candidate in `internal/reconcile`.
 - [x] False positives are prevented by conservative thresholding and tests (1 minor-unit amount gap scores `0.75`, below threshold).
 - [x] Unit tests cover scorer edge cases (`internal/match/score_test.go`).
+- [x] Reconcile integration tests cover Postgres-only matching and batch pending retry.
 
 ### Match Confirmation Transaction
 
@@ -207,7 +219,7 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 - [x] Update both events to `MATCHED`.
 - [ ] Run entity resolution inside the confirmation transaction.
 - [ ] Upsert graph state inside the confirmation transaction.
-- [x] Remove Redis candidates after durable commit.
+- [x] Remove Redis candidates after durable commit (in `internal/reconcile`).
 - [x] Retry serialization conflicts once.
 - [x] Ensure replaying the same event cannot create duplicate matches (second confirm fails when status is not `PENDING`).
 
@@ -222,6 +234,7 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 
 ### Crash Recovery And Idempotency
 
+- [x] `PARTIAL` Background worker scans recent pending events and retries reconciliation (`StartPendingWorker`).
 - [ ] Startup scans Postgres for pending events inside the current window.
 - [ ] Startup rebuilds Redis candidate windows.
 - [ ] Startup runs expiry catch-up for events that aged out during downtime.
@@ -279,7 +292,7 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 
 - [x] `GET /health` exists and checks Postgres and Redis.
 - [x] `GET /events/{eventID}` exists.
-- [x] `POST /events` exists for local ingestion.
+- [x] `POST /events` exists for local ingestion; delegates to `internal/reconcile` after insert.
 - [ ] `GET /metrics/current`.
 - [ ] `GET /metrics/history`.
 - [ ] Decide whether `/matches` and `/discrepancies` remain debug endpoints or are superseded by gRPC graph APIs.
@@ -417,7 +430,7 @@ Goal: live multi-tenant sandbox is deployed, demoable, observable, and shareable
 - [x] `docs/spec.md` exists and is the source of truth.
 - [x] `docs/coach.md` exists and defines coaching behavior.
 - [x] `docs/progress.md` exists and tracks implementation status.
-- [ ] README updated to reflect the current graph + agentic product direction.
+- [x] README updated to reflect reconciliation engine, concurrent benchmark results, and current CORE architecture (2026-06-05).
 - [ ] `docs/ARCHITECTURE.md`.
 - [ ] `docs/DECISIONS.md`.
 - [ ] Seed design decisions from the spec copied into `docs/DECISIONS.md`.

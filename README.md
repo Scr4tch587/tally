@@ -2,9 +2,9 @@
 
 A correctness-first Go core for multi-source financial transaction reconciliation — the foundation for a counterparty graph and operator-facing product described in [`docs/spec.md`](docs/spec.md).
 
-Tally ingests canonical transaction events from independent sources (ledger, processor, bank), indexes pending candidates in Redis, scores cross-source pairs with a weighted matcher, and confirms matches in `SERIALIZABLE` Postgres transactions. A benchmark harness with seeded ground truth measures throughput, latency, match rate, and false-positive rate against the live HTTP ingestion path.
+Tally ingests canonical transaction events from independent sources (ledger, processor, bank), indexes pending candidates in Redis, scores cross-source pairs with a weighted matcher, and confirms matches in `SERIALIZABLE` Postgres transactions. A Postgres-backed reconciliation engine retries pending events on ingestion and via a background worker. A benchmark harness with seeded ground truth measures throughput, latency, match rate, and false-positive rate against the live HTTP ingestion path.
 
-> **Status: early Phase 1.** The matching-and-measurement spine is working locally. Discrepancy handling, crash recovery, entity resolution, graph materialization, gRPC, product app, and deployment are not built yet. See [`docs/progress.md`](docs/progress.md) for the living checklist.
+> **Status: early Phase 1.** The matching-and-measurement spine works locally under concurrent ingestion. Discrepancy handling, full crash recovery (Redis rebuild on startup), entity resolution, graph materialization, gRPC, product app, and deployment are not built yet. See [`docs/progress.md`](docs/progress.md) for the living checklist.
 
 ---
 
@@ -16,10 +16,13 @@ Tally ingests canonical transaction events from independent sources (ledger, pro
 | Redis sorted-set candidate window (tenant × asset × amount bucket) | Done |
 | Weighted amount/time/account scorer (`internal/match`) | Done |
 | `SERIALIZABLE` match confirmation → `matches` / `match_events` | Done |
+| Reconciliation orchestration (`internal/reconcile`) | Done |
+| Postgres-backed pending candidate lookup | Done |
+| Background pending reconciliation worker | Done |
 | Benchmark harness with ground-truth correctness checks | Done |
 | Per-source connectors (ledger / processor / bank parsers) | Not started |
 | Window expiry → discrepancies | Not started |
-| Crash recovery (Redis rebuild from Postgres) | Not started |
+| Full crash recovery (Redis rebuild from Postgres on startup) | Not started |
 | Entity resolution and counterparty graph | Not started |
 | gRPC graph API, product app, deployment | Not started |
 
@@ -44,23 +47,37 @@ Reconciliation matches these observations back together. Tally's design constrai
                          │  POST /events (HTTP)
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  CORE HTTP API (chi) — cmd via main.go                   │
+│  CORE HTTP API (chi) — main.go                           │
 │                                                          │
 │  1. Validate → CanonicalEvent (server-side idempotency) │
 │  2. InsertEvent (ON CONFLICT DO NOTHING)                 │
 │  3. AddCandidate → Redis ZSET                            │
-│  4. FindCandidates (±120s window, ±1 minor-unit buckets) │
-│  5. Score cross-source candidates, rank by score         │
-│  6. ConfirmMatch (SERIALIZABLE tx) → Postgres            │
-│  7. RemoveCandidate from Redis                           │
+│  4. ReconcilePendingEvent(event_id)                     │
+└───────────────┬──────────────────────────────────────────┘
+                │
+                ▼
+┌──────────────────────────────────────────────────────────┐
+│  Reconciliation engine (internal/reconcile)              │
+│                                                          │
+│  • Load current event from Postgres                      │
+│  • Find pending candidates from Postgres (correctness)   │
+│  • Score cross-source candidates, rank by score          │
+│  • ConfirmMatch (SERIALIZABLE tx)                        │
+│  • Remove matched events from Redis                      │
+│  • Re-add unmatched pending event to Redis               │
 └───────────────┬──────────────────────┬───────────────────┘
                 │                      │
          Postgres (durable)      Redis (candidate index)
     canonical_events            candidates:{tenant}:{asset}:{bucket}
     matches / match_events      member=event_id, score=timestamp_ms
+
+┌──────────────────────────────────────────────────────────┐
+│  Background worker (250ms tick, 500-event batch)         │
+│  FindRecentPendingEvents → ReconcilePendingEvent         │
+└──────────────────────────────────────────────────────────┘
 ```
 
-Matching runs **synchronously inside each `POST /events` request**. There is no background reconciliation worker yet — concurrent out-of-order ingestion can leave true pairs unmatched until a pending-event sweep is added (see [Known limitations](#known-limitations)).
+**Postgres is durable truth. Redis is a rebuildable candidate cache.** Request-time reconciliation uses Postgres pending candidates so concurrent arrival does not depend on Redis visibility order. The background worker retries recent pending events to close races and transient serialization failures.
 
 ---
 
@@ -72,7 +89,7 @@ When a new event is ingested (`internal/api/handlers.go`):
 
 2. **Candidate indexing.** The event is added to Redis sorted sets at keys `candidates:{tenant_id}:{asset}:{amount_bucket}` for the exact amount and adjacent buckets (`amount ± 1` minor unit). Score = event timestamp in Unix milliseconds.
 
-3. **Candidate lookup.** `FindCandidates` queries the same buckets for members whose timestamp falls within ±120 seconds of the incoming event.
+3. **Reconciliation.** `internal/reconcile` loads the event and queries Postgres for pending candidates: same tenant, opposite source, same asset/currency, exact or adjacent amount bucket, timestamp within ±120 seconds.
 
 4. **Scoring.** Same-source candidates are skipped. Remaining pairs are scored (`internal/match/score.go`):
 
@@ -88,7 +105,9 @@ When a new event is ingested (`internal/api/handlers.go`):
 
 5. **Confirmation.** Top-ranked candidate above threshold is confirmed in a `SERIALIZABLE` transaction (`internal/store/postgres.go`): both events must still be `PENDING`, same tenant; insert `matches` (with score + evidence JSON) and `match_events`; update both events to `MATCHED`. Serialization conflicts retry once.
 
-6. **Cleanup.** Matched events are removed from Redis candidate sets.
+6. **Cleanup.** Matched events are removed from Redis. Unmatched pending events are re-added to Redis so future arrivals can find them.
+
+The background worker periodically scans recent `PENDING` events and runs the same reconciliation function.
 
 ---
 
@@ -107,7 +126,15 @@ The harness lives in `cmd/bench`, `internal/loadgen`, and `internal/bench`. It g
 
 A run is **clean** when match rate = 100%, false positives = 0, missed matches = 0, and HTTP errors = 0.
 
-**Best measured clean run** (2026-06-04, local Docker Postgres/Redis, paired arrival, **1 worker**): 160 true pairs / 832 total events (40% decoy ratio), **237 events/sec**, **8 ms p99** reconcile latency, **100% match rate**, **0 false positives**.
+**Best measured clean runs** (2026-06-05, local Docker Postgres/Redis):
+
+| Scenario | Result |
+|----------|--------|
+| Correctness gate: shuffled, 16 workers, 100 pairs | 100% match rate, 0 false positives, 0 missed |
+| Correctness gate: paired, 16 workers, 100 pairs | 100% match rate, 0 false positives, 0 missed |
+| Highest clean stepped load: shuffled, 16 workers | 160 true pairs / 832 total events, **1615 events/sec**, **958 ms p99**, 100% match rate, 0 false positives |
+
+First non-clean stepped load step on the same seed: 165 true pairs (1 false positive).
 
 ```bash
 # Start dependencies and apply migrations
@@ -117,23 +144,24 @@ make migrate
 # Start the server (separate terminal)
 go run .
 
-# Correctness gate (defaults: 1000 pairs, 16 workers — use WORKERS=1 for clean runs)
-make bench WORKERS=1 PAIRS=160 ARRIVAL=paired
+# Concurrent correctness gates
+make bench PAIRS=100 WORKERS=16 ARRIVAL=shuffled OUTPUT=bench-results/concurrency-shuffled-w16.json
+make bench PAIRS=100 WORKERS=16 ARRIVAL=paired OUTPUT=bench-results/concurrency-paired-w16.json
 
-# Stepped load search for largest clean run under p99 ≤ 250 ms
-make bench-load WORKERS=1 ARRIVAL=paired
+# Stepped load search for largest clean run
+make bench-load WORKERS=16 ARRIVAL=shuffled OUTPUT=bench-results/load-shuffled-w16.json
 ```
 
-Reports are written to `bench-results/latest.json` by default.
+Reports are written to `bench-results/` (default: `bench-results/latest.json`).
 
 ---
 
 ## Known limitations
 
-- **Concurrent ingestion.** Request-local matching can miss true pairs when both halves arrive in parallel before the counterpart is indexed. Measured: shuffled 16-worker / 100-pair run → 91% match rate; paired 16-worker / 100-pair → 55%. The planned fix is a separate pending-event reconciliation sweep decoupled from the request lifecycle.
 - **No discrepancy path.** Events that never match stay `PENDING`; there is no window-expiry sweep or `discrepancies` table yet.
-- **No crash recovery.** Redis is designed as a rebuildable cache, but startup rebuild from Postgres is not implemented.
+- **Partial crash recovery.** The background worker is the first retry primitive, but startup Redis rebuild from Postgres pending events is not implemented.
 - **Redis removal is post-commit.** Not part of the Postgres transaction; a crash between commit and Redis cleanup leaves stale index entries until recovery exists.
+- **Load ceiling.** On seed 42 with 40% decoys, correctness breaks at 165 true pairs (1 false positive) under shuffled 16-worker ingestion.
 
 ---
 
@@ -141,7 +169,7 @@ Reports are written to `bench-results/latest.json` by default.
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /events` | Ingest a canonical event; runs matching inline |
+| `POST /events` | Ingest a canonical event; runs reconciliation inline |
 | `GET /events/{eventID}` | Fetch a canonical event by ID |
 | `GET /health` | Postgres + Redis connectivity check |
 
@@ -172,6 +200,7 @@ tally/
     event/             # CanonicalEvent contract and validation
     loadgen/           # Deterministic benchmark dataset generation
     match/             # Weighted scoring function
+    reconcile/         # Reconciliation orchestration and pending worker
     store/             # Postgres and Redis access
   migrations/          # Postgres schema (canonical_events, matches)
   docs/
@@ -206,7 +235,9 @@ go test ./...
 
 **Serializable isolation for match confirmation.** Two concurrent requests cannot both match the same event; integration tests cover replay and race behavior.
 
-**Redis as a narrow index, Postgres as truth.** Candidate lookup is fast; durable state and match decisions live in Postgres.
+**Redis as a narrow index, Postgres as truth.** Candidate lookup can use Redis for speed; durable reconciliation queries Postgres pending state so concurrent arrival does not depend on Redis visibility order.
+
+**Background pending retry.** A process-local worker rescans recent pending events and reuses the same reconciliation path, closing request-order gaps and transient serialization races.
 
 **Amount bucketing with adjacency.** Exact and ±1 minor-unit buckets catch small fee-rounding differences without unbounded scans.
 
