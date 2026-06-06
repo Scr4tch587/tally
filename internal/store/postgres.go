@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"tally/internal/event"
+	"time"
 )
 
 func Connect(ctx context.Context) (*pgxpool.Pool, error) {
@@ -156,4 +156,77 @@ func confirmMatchOnce(ctx context.Context, pool *pgxpool.Pool, eventA, eventB st
 	}
 
 	return tx.Commit(ctx)
+}
+
+func FindPendingMatchCandidates(ctx context.Context, pool *pgxpool.Pool, ev *event.CanonicalEvent, maxAgeMillis int64) ([]*event.CanonicalEvent, error) {
+	asset := ev.AssetCode
+	if asset == "" {
+		asset = ev.Currency
+	}
+
+	rows, err := pool.Query(
+		ctx,
+		`SELECT tenant_id, event_id, source_type, source_event_id, amount_minor, currency, asset_code,
+		        event_timestamp, ingested_at, direction, account_ref, counterparty_ref, metadata, idempotency_key
+		   FROM canonical_events
+		  WHERE tenant_id = $1 
+		  AND event_id <> $2 
+		  AND match_status = 'PENDING' 
+		  AND source_type <> $3 
+		  AND COALESCE(NULLIF(asset_code, ''), currency) = $4
+		  AND amount_minor = ANY ($5)
+		  AND event_timestamp BETWEEN $6 AND $7`,
+		ev.TenantID,
+		ev.EventID,
+		ev.SourceType,
+		asset,
+		candidateBuckets(ev.AmountMinor),
+		ev.Timestamp.Add(-time.Duration(maxAgeMillis)*time.Millisecond),
+		ev.Timestamp.Add(time.Duration(maxAgeMillis)*time.Millisecond),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := make([]*event.CanonicalEvent, 0)
+	for rows.Next() {
+		var candidateEv event.CanonicalEvent
+		err = rows.Scan(&candidateEv.TenantID, &candidateEv.EventID, &candidateEv.SourceType, &candidateEv.SourceEventID, &candidateEv.AmountMinor, &candidateEv.Currency, &candidateEv.AssetCode, &candidateEv.Timestamp, &candidateEv.IngestedAt, &candidateEv.Direction, &candidateEv.AccountRef, &candidateEv.CounterpartyRef, &candidateEv.Metadata, &candidateEv.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, &candidateEv)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return candidates, nil
+}
+
+func FindRecentPendingEvents(ctx context.Context, pool *pgxpool.Pool, limit int) ([]string, error) {
+	rows, err := pool.Query(
+		ctx,
+		`SELECT event_id FROM canonical_events WHERE match_status = 'PENDING' ORDER BY ingested_at DESC LIMIT $1`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	eventIDs := make([]string, 0)
+	for rows.Next() {
+		var eventID string
+		err = rows.Scan(&eventID)
+		if err != nil {
+			return nil, err
+		}
+		eventIDs = append(eventIDs, eventID)
+	}
+
+	return eventIDs, rows.Err()
 }

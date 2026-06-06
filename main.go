@@ -16,7 +16,8 @@ import (
 func main() {
 	log := logger.New()
 	log.Info().Msg("Tally Ready")
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	pool, err := store.Connect(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("postgres connection failed")
@@ -33,6 +34,7 @@ func main() {
 	log.Info().Msg("postgres ok")
 	client := store.NewRedisClient()
 	engine := reconcile.NewEngine(pool, log, client)
+	go reconcile.StartPendingWorker(ctx, engine, 250*time.Millisecond, 500)
 	h := api.NewHandler(pool, log, client, engine)
 	r := api.NewRouter(h)
 	log.Info().Msg("server listening on :8080")
@@ -49,10 +51,11 @@ func main() {
 	}()
 
 	<-quit
+	cancel()
 	log.Info().Msg("shutting down")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatal().Err(err).Msg("shutdown failed")

@@ -19,10 +19,7 @@ func TestInsertEventPersistsMetadata(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, "TRUNCATE match_events, matches, canonical_events")
-	if err != nil {
-		t.Fatalf("truncate tables: %v", err)
-	}
+	truncateStoreTables(t, ctx, pool)
 
 	ev, err := event.NewCanonicalEvent(
 		"tenant-test",
@@ -125,10 +122,7 @@ func TestConfirmMatchPersistsMatchAndUpdatesEvents(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	_, err = pool.Exec(ctx, "TRUNCATE match_events, matches, canonical_events")
-	if err != nil {
-		t.Fatalf("truncate tables: %v", err)
-	}
+	truncateStoreTables(t, ctx, pool)
 
 	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
 	evA, err := event.NewCanonicalEvent(
@@ -340,20 +334,287 @@ func TestConfirmMatchPreventsConcurrentDoubleMatch(t *testing.T) {
 	}
 }
 
+func TestFindPendingMatchCandidatesFiltersDurableCandidates(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	truncateStoreTables(t, ctx, pool)
+
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	current := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-current",
+		sourceType:    "ledger",
+		sourceEventID: "src-candidates-current",
+		timestamp:     ts,
+	})
+	trueCandidate := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-true",
+		sourceType:    "processor",
+		sourceEventID: "src-candidates-true",
+		timestamp:     ts.Add(time.Second),
+	})
+	adjacentAmountCandidate := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-adjacent",
+		sourceType:    "bank",
+		sourceEventID: "src-candidates-adjacent",
+		amountMinor:   1251,
+		timestamp:     ts.Add(2 * time.Second),
+	})
+	sameSource := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-same-source",
+		sourceType:    "ledger",
+		sourceEventID: "src-candidates-same-source",
+		timestamp:     ts.Add(time.Second),
+	})
+	otherTenant := newStoreTestEvent(t, storeEventOpts{
+		tenantID:      "tenant-other",
+		eventID:       "evt-candidates-other-tenant",
+		sourceType:    "processor",
+		sourceEventID: "src-candidates-other-tenant",
+		timestamp:     ts.Add(time.Second),
+	})
+	otherAsset := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-other-asset",
+		sourceType:    "processor",
+		sourceEventID: "src-candidates-other-asset",
+		assetCode:     "USDC",
+		timestamp:     ts.Add(time.Second),
+	})
+	outOfAmount := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-out-amount",
+		sourceType:    "processor",
+		sourceEventID: "src-candidates-out-amount",
+		amountMinor:   1252,
+		timestamp:     ts.Add(time.Second),
+	})
+	outOfTime := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-out-time",
+		sourceType:    "processor",
+		sourceEventID: "src-candidates-out-time",
+		timestamp:     ts.Add(121 * time.Second),
+	})
+	matchedCandidate := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-matched",
+		sourceType:    "processor",
+		sourceEventID: "src-candidates-matched",
+		timestamp:     ts.Add(time.Second),
+	})
+	matchedPeer := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-candidates-matched-peer",
+		sourceType:    "bank",
+		sourceEventID: "src-candidates-matched-peer",
+		timestamp:     ts.Add(time.Second),
+	})
+
+	insertStoreEvents(t, ctx, pool,
+		current,
+		trueCandidate,
+		adjacentAmountCandidate,
+		sameSource,
+		otherTenant,
+		otherAsset,
+		outOfAmount,
+		outOfTime,
+		matchedCandidate,
+		matchedPeer,
+	)
+
+	if err := ConfirmMatch(ctx, pool, matchedCandidate.EventID, matchedPeer.EventID, 0.91, nil); err != nil {
+		t.Fatalf("confirm matched candidate fixture: %v", err)
+	}
+
+	candidates, err := FindPendingMatchCandidates(ctx, pool, current, 120000)
+	if err != nil {
+		t.Fatalf("FindPendingMatchCandidates: %v", err)
+	}
+
+	got := candidateIDSet(candidates)
+	wantPresent := []string{trueCandidate.EventID, adjacentAmountCandidate.EventID}
+	for _, eventID := range wantPresent {
+		if !got[eventID] {
+			t.Fatalf("expected candidate %s in results; got %v", eventID, got)
+		}
+	}
+
+	wantAbsent := []string{
+		current.EventID,
+		sameSource.EventID,
+		otherTenant.EventID,
+		otherAsset.EventID,
+		outOfAmount.EventID,
+		outOfTime.EventID,
+		matchedCandidate.EventID,
+		matchedPeer.EventID,
+	}
+	for _, eventID := range wantAbsent {
+		if got[eventID] {
+			t.Fatalf("did not expect candidate %s in results; got %v", eventID, got)
+		}
+	}
+}
+
+func TestFindPendingMatchCandidatesUsesAssetCodeBeforeCurrency(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	truncateStoreTables(t, ctx, pool)
+
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	current := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-asset-current",
+		sourceType:    "ledger",
+		sourceEventID: "src-asset-current",
+		assetCode:     "USDC",
+		currency:      "USD",
+		timestamp:     ts,
+	})
+	sameAsset := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-asset-same",
+		sourceType:    "processor",
+		sourceEventID: "src-asset-same",
+		assetCode:     "USDC",
+		currency:      "USD",
+		timestamp:     ts.Add(time.Second),
+	})
+	currencyOnly := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-asset-currency-only",
+		sourceType:    "processor",
+		sourceEventID: "src-asset-currency-only",
+		currency:      "USD",
+		timestamp:     ts.Add(time.Second),
+	})
+
+	insertStoreEvents(t, ctx, pool, current, sameAsset, currencyOnly)
+
+	candidates, err := FindPendingMatchCandidates(ctx, pool, current, 120000)
+	if err != nil {
+		t.Fatalf("FindPendingMatchCandidates: %v", err)
+	}
+
+	got := candidateIDSet(candidates)
+	if !got[sameAsset.EventID] {
+		t.Fatalf("expected same asset candidate in results; got %v", got)
+	}
+	if got[currencyOnly.EventID] {
+		t.Fatalf("did not expect currency fallback candidate when event has asset code; got %v", got)
+	}
+}
+
+func TestFindRecentPendingEventsReturnsOnlyPendingWithLimit(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	truncateStoreTables(t, ctx, pool)
+
+	ts := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+	pendingA := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-recent-pending-a",
+		sourceType:    "ledger",
+		sourceEventID: "src-recent-pending-a",
+		timestamp:     ts,
+	})
+	pendingB := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-recent-pending-b",
+		sourceType:    "processor",
+		sourceEventID: "src-recent-pending-b",
+		timestamp:     ts.Add(time.Second),
+	})
+	matchedA := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-recent-matched-a",
+		sourceType:    "ledger",
+		sourceEventID: "src-recent-matched-a",
+		timestamp:     ts.Add(2 * time.Second),
+	})
+	matchedB := newStoreTestEvent(t, storeEventOpts{
+		eventID:       "evt-recent-matched-b",
+		sourceType:    "processor",
+		sourceEventID: "src-recent-matched-b",
+		timestamp:     ts.Add(3 * time.Second),
+	})
+
+	insertStoreEvents(t, ctx, pool, pendingA, pendingB, matchedA, matchedB)
+
+	if err := ConfirmMatch(ctx, pool, matchedA.EventID, matchedB.EventID, 0.91, nil); err != nil {
+		t.Fatalf("confirm matched fixture: %v", err)
+	}
+
+	eventIDs, err := FindRecentPendingEvents(ctx, pool, 10)
+	if err != nil {
+		t.Fatalf("FindRecentPendingEvents: %v", err)
+	}
+
+	got := stringSet(eventIDs)
+	for _, eventID := range []string{pendingA.EventID, pendingB.EventID} {
+		if !got[eventID] {
+			t.Fatalf("expected pending event %s in results; got %v", eventID, got)
+		}
+	}
+	for _, eventID := range []string{matchedA.EventID, matchedB.EventID} {
+		if got[eventID] {
+			t.Fatalf("did not expect matched event %s in results; got %v", eventID, got)
+		}
+	}
+
+	limitedEventIDs, err := FindRecentPendingEvents(ctx, pool, 1)
+	if err != nil {
+		t.Fatalf("FindRecentPendingEvents limit 1: %v", err)
+	}
+	if len(limitedEventIDs) != 1 {
+		t.Fatalf("limited pending event count = %d, want 1", len(limitedEventIDs))
+	}
+}
+
 type storeEventOpts struct {
 	eventID       string
+	tenantID      string
 	sourceType    string
 	sourceEventID string
+	amountMinor   int64
+	assetCode     string
+	currency      string
 	timestamp     time.Time
 }
 
 func truncateStoreTables(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 
+	acquireStoreTestLock(t, ctx, pool)
 	_, err := pool.Exec(ctx, "TRUNCATE match_events, matches, canonical_events")
 	if err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
+}
+
+func acquireStoreTestLock(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire postgres test lock connection: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", int64(8675309)); err != nil {
+		conn.Release()
+		t.Fatalf("acquire postgres test lock: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", int64(8675309))
+		conn.Release()
+	})
 }
 
 func newStoreTestEvent(t *testing.T, opts storeEventOpts) *event.CanonicalEvent {
@@ -362,15 +623,24 @@ func newStoreTestEvent(t *testing.T, opts storeEventOpts) *event.CanonicalEvent 
 	if opts.timestamp.IsZero() {
 		opts.timestamp = time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
 	}
+	if opts.tenantID == "" {
+		opts.tenantID = "tenant-test"
+	}
+	if opts.amountMinor == 0 {
+		opts.amountMinor = 1250
+	}
+	if opts.currency == "" {
+		opts.currency = "USD"
+	}
 
 	ev, err := event.NewCanonicalEvent(
-		"tenant-test",
+		opts.tenantID,
 		opts.eventID,
 		opts.sourceType,
 		opts.sourceEventID,
-		1250,
-		"",
-		"USD",
+		opts.amountMinor,
+		opts.assetCode,
+		opts.currency,
 		opts.timestamp,
 		"debit",
 		"cash",
@@ -396,4 +666,20 @@ func insertStoreEvents(t *testing.T, ctx context.Context, pool *pgxpool.Pool, ev
 			t.Fatalf("expected insert for %s", ev.EventID)
 		}
 	}
+}
+
+func candidateIDSet(candidates []*event.CanonicalEvent) map[string]bool {
+	ids := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		ids[candidate.EventID] = true
+	}
+	return ids
+}
+
+func stringSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
+	}
+	return set
 }

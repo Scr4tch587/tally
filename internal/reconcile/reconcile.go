@@ -10,6 +10,7 @@ import (
 	"tally/internal/event"
 	"tally/internal/match"
 	"tally/internal/store"
+	"time"
 )
 
 type rankedCandidate struct {
@@ -35,26 +36,21 @@ func (e *Engine) ReconcilePendingEvent(ctx context.Context, eventID string) erro
 		return err
 	}
 
-	candidates, err := store.FindCandidates(ctx, e.Client, ev, 120000)
+	postgresCandidates, err := store.FindPendingMatchCandidates(ctx, e.Pool, ev, 120000)
 	if err != nil {
-		e.Log.Error().Err(err).Msg("Finding candidates failed")
+		e.Log.Error().Err(err).Msg("Finding postgres match candidates failed")
 		return err
 	}
-	e.Log.Info().Int("candidate_count", len(candidates)).Msg("candidates found")
 
-	rankedCandidates := make([]rankedCandidate, 0, len(candidates))
+	seenIDs := map[string]bool{}
+	e.Log.Info().Int("postgres_candidate_count", len(postgresCandidates)).Msg("postgres candidates found")
+	rankedCandidates := make([]rankedCandidate, 0, len(postgresCandidates))
 
-	for _, id := range candidates {
-		e.Log.Info().Str("candidate_id", id).Str("current_event", ev.EventID).Msg("candidate found")
-		if id == ev.EventID {
+	for _, candidateEv := range postgresCandidates {
+		if seenIDs[candidateEv.EventID] {
 			continue
 		}
-
-		candidateEv, err := store.GetEvent(ctx, e.Pool, id)
-		if err != nil {
-			e.Log.Error().Err(err).Msg("Fetching event failed")
-			return err
-		}
+		seenIDs[candidateEv.EventID] = true
 
 		if candidateEv.SourceType == ev.SourceType {
 			continue
@@ -76,6 +72,7 @@ func (e *Engine) ReconcilePendingEvent(ctx context.Context, eventID string) erro
 		return rankedCandidates[i].Score > rankedCandidates[j].Score
 	})
 
+	matched := false
 	for _, candidate := range rankedCandidates {
 		err = store.ConfirmMatch(ctx, e.Pool, ev.EventID, candidate.Event.EventID, candidate.Score, candidate.Evidence)
 		if err != nil {
@@ -85,6 +82,8 @@ func (e *Engine) ReconcilePendingEvent(ctx context.Context, eventID string) erro
 			}
 			return err
 		}
+
+		matched = true
 		err = store.RemoveCandidate(ctx, e.Client, ev)
 		if err != nil {
 			e.Log.Error().Err(err).Msg("Removing candidate failed")
@@ -98,5 +97,53 @@ func (e *Engine) ReconcilePendingEvent(ctx context.Context, eventID string) erro
 		break
 	}
 
+	if !matched {
+		err = store.AddCandidate(ctx, e.Client, ev)
+		if err != nil {
+			e.Log.Error().Err(err).Msg("Adding unmatched pending event failed")
+			return err
+		}
+	}
+
 	return nil
+}
+
+func (e *Engine) ReconcileRecentPending(ctx context.Context, limit int) error {
+	eventIDs, err := store.FindRecentPendingEvents(ctx, e.Pool, limit)
+	if err != nil {
+		e.Log.Error().Err(err).Msg("Finding recent pending events failed")
+		return err
+	}
+
+	for _, eventID := range eventIDs {
+		err = e.ReconcilePendingEvent(ctx, eventID)
+		if err != nil {
+			e.Log.Info().Err(err).Str("event_id", eventID).Msg("Reconciling pending event failed")
+			continue
+		}
+	}
+
+	return nil
+}
+
+func StartPendingWorker(ctx context.Context, engine *Engine, interval time.Duration, limit int) {
+	run := func() {
+		if err := engine.ReconcileRecentPending(ctx, limit); err != nil {
+			engine.Log.Error().Err(err).Msg("pending reconciliation worker failed")
+		}
+	}
+
+	run()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }
