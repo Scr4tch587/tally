@@ -431,6 +431,8 @@ Default weights:
 
 Match confirms only if `match_score >= 0.85`.
 
+**Planned rework (2026-08-17, HANDWRITE):** profiling the BenchRec real-data corpus (see D012) showed this formula's assumptions fail on real reconciliation data: account matching contributes zero discrimination on single-account data, ±2-minor-unit amount decay is blind to real fee gaps (median $50 where legs disagree), the ±120s time window is meaningless at day granularity, and 29% of statement lines collide on (date, amount) — the discriminating signal lives in reference strings, which the current formula never reads. The rework adds a reference-token similarity component, day-granularity time decay, and relative amount tolerance, holding the precision-over-recall threshold philosophy. Tie-breaks resolve to "leave pending," never "pick one." Driven by measured failures from the BenchRec replay, not theory.
+
 ### 9.3 Entity resolution (HANDWRITE zone, centerpiece)
 
 This is now the core handwrite problem.
@@ -836,7 +838,9 @@ Report sections:
 
 ### 14.3 Deployment
 
-Keep **EKS Fargate**. The previous ECS reversal stays reversed.
+**Current state (2026-08-17):** a multi-stage Dockerfile, GitHub Actions CI (test + live-server correctness benchmark gates), and Kubernetes manifests verified end-to-end on a local kind cluster (`deploy/k8s/`, `make k8s-up`) are implemented. Cloud deployment is deliberately deferred — an EKS control plane costs real money with no users; the manifests and probes carry the Kubernetes signal until the product surface exists to justify hosting.
+
+For the eventual cloud deploy, keep **EKS Fargate**. The previous ECS reversal stays reversed.
 
 Deployment shape:
 
@@ -859,6 +863,8 @@ Production artifact for v1:
 ---
 
 ## 15) Project Timeline (16 Weeks, May–End of August 2026)
+
+> **Revised sequencing (2026-08-17):** the summer window closed with Phase 1's matching-and-measurement spine shipped (plus CI/Docker/kind-Kubernetes beyond the original plan). The phases below are retained as the long-term structure, but the near-term order is now driven by the Winter 2027 internship application cycle (active target: Datadog): **(1)** BenchRec real-data validation — adapter/replay, handwritten scorer rework per §9.2, scale fixes; **(2)** startup Redis rebuild (crash recovery, §9.6); **(3)** Stripe sandbox processor connector with payout N:M matching and BenchRec-distribution-sampled test traffic (D013/D014); **(4)** graph, entity resolution, and product phases below, unscheduled.
 
 Estimated structure: summer build concurrent with Super.com W-1.
 
@@ -1031,6 +1037,12 @@ These belong in `docs/DECISIONS.md`.
 **D010: CloudWatch embedded metrics + OTel over extra sidecars where possible.** Keep the deployment simple while preserving enough observability for a portfolio project and live demo.
 
 **D011: Sentry for errors and traces, CloudWatch for business metrics.** Sentry owns error monitoring, panic capture, release health, and transaction-latency alerting, with OTel instrumentation exported through the `sentryotel` bridge so the tracing story stays vendor-neutral. CloudWatch owns reconciliation business metrics (match rate, pending window, discrepancy counts) and infra alarms. One tool per question: "is the code failing?" → Sentry; "is the ledger healthy?" → CloudWatch. Added 2026-08-11; the CORE error-monitoring slice is already implemented.
+
+**D012: BenchRec as the real-data validation corpus.** The BenchRec cash reconciliation dataset (ICAIF 2023, CC BY 4.0) provides ~56k real bank↔ledger matches with rule/manual provenance. It replaces nothing — synthetic loadgen remains for controlled load tests — but every headline correctness claim should ultimately be measured on real data. Known limitations are stated wherever numbers are reported: 1:1 both-sided subset (83.9% of matches) until N:M lands, single account and currency, anonymized-but-structure-preserving tokens, one institution's custody flows. Files live in `data/benchrec/` (gitignored for size; CC BY 4.0 permits committing attributed samples). Added 2026-08-17.
+
+**D013: Tally integrates with payment rails; it does not build them.** Considered and rejected: building independent payment rails for authenticity. Self-built rails maximize self-authored mess — the same critique as synthetic data, at far larger scope. Tally's position is the reconciliation/observability layer that sits *above* rails. Stripe (sandbox) becomes the processor-leg connector; card networks, issuers, and acquirers manifest to Tally only as what a merchant actually sees: fee structures and N:1 payout batching (which `match_events` was designed for). Added 2026-08-17.
+
+**D014: Stripe test traffic is distribution-sampled from BenchRec, not replayed through Stripe.** Literal replay fails on rate limits (test mode ~25 rps, load testing prohibited), amount caps (8-digit minor units vs $6.5B rows), and semantics (custody flows aren't card payments — forcing them through PaymentIntents launders real data into fake data). Instead the Stripe leg's traffic shape (amount distribution log-scaled into card range, inter-arrival timing, batch structure, DR/CR mix) is sampled from BenchRec's empirical distributions, at modest volume within rate limits. Added 2026-08-17.
 
 ---
 

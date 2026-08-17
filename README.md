@@ -315,4 +315,4 @@ Planned (per spec, not wired): OpenTelemetry tracing exported to Sentry via `sen
 
 - [`docs/spec.md`](docs/spec.md) — full architecture, graph model, and roadmap
 - [`docs/progress.md`](docs/progress.md) — what's done, blockers, and latest verification
-- [`docs/coach.md`](docs/coach.md) — handwrite vs generate zones and coaching notes
+- `docs/private/` — local working docs (coaching conventions, drafts); kept out of git

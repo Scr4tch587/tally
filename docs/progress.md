@@ -1,12 +1,12 @@
 # Tally Progress Tracker
 
-Last assessed: 2026-08-11
+Last assessed: 2026-08-17
 
 This document tracks implementation progress against `docs/spec.md`. Update it after every meaningful repo change so the next work session starts from reality, not memory.
 
 ## How To Update This Doc
 
-- Read `docs/coach.md` before using this tracker.
+- Read `docs/private/coach.md` before using this tracker.
 - Re-read the relevant section of `docs/spec.md` before marking anything complete.
 - Mark an item complete only when the implementation exists, is wired into the normal path, and has at least basic verification.
 - Keep partial work unchecked and label it `PARTIAL`.
@@ -42,6 +42,20 @@ Major gaps:
 - Discrepancy tables, metric snapshots, graph tables, entity resolution, gRPC graph API, product app, sandbox, and deployment infra are not implemented.
 - Full crash recovery (startup Redis rebuild, expiry catch-up) is not implemented; the pending worker is the first retry primitive only.
 - Load ceiling on seed 42: first false positive at 165 true pairs under shuffled 16-worker ingestion.
+
+## Current Focus: BenchRec Real-Data Validation (started 2026-08-17)
+
+Active arc, sequenced ahead of everything else for the Winter 2027 application cycle (spec §15 revised sequencing, D012–D014). Work plan lives in the private guide doc alongside `docs/private/coach.md`.
+
+- [ ] Part 1: BenchRec adapter + `cmd/benchrec` replay runner (generate zone; reuses `internal/bench` exports without modifying that package); honest before-numbers on the 1:1 both-sided subset recorded here, per-stratum (rule vs MANUAL, exact-amount vs fee-gap).
+- [ ] Part 2: scorer rework (HANDWRITE): reference-token similarity, day-granularity time decay, relative amount tolerance; synthetic CI gates must stay green; after-numbers recorded here.
+- [ ] Part 3: scale fixes surfaced by the ~94k-event replay (candidate query indexing, worker rescan behavior), each with before/after measurements.
+
+Dataset: `data/benchrec/` (gitignored; CC BY 4.0). Profiled 2026-08-17: 149,854 rows, 56,074 matches, 83.9% 1:1, 95.1% exact amount agreement across legs, day-granularity dates, single USD account, 29% (date, amount) collisions, reference-token overlap in 100% of sampled 1:1 pairs, 16.6% manual matches.
+
+Deferred but still owed, in order: startup Redis rebuild (crash recovery, HANDWRITE); Stripe sandbox processor connector with payout N:M matching and BenchRec-distribution-sampled traffic (D013/D014).
+
+Doc restructure 2026-08-17: `docs/coach.md` moved to `docs/private/coach.md` (gitignored along with all private working docs); references updated.
 
 ## Current Blockers
 
@@ -458,7 +472,7 @@ Goal: live multi-tenant sandbox is deployed, demoable, observable, and shareable
 ## Documentation Checklist
 
 - [x] `docs/spec.md` exists and is the source of truth.
-- [x] `docs/coach.md` exists and defines coaching behavior.
+- [x] `docs/private/coach.md` exists and defines coaching behavior.
 - [x] `docs/progress.md` exists and tracks implementation status.
 - [x] README updated to reflect reconciliation engine, concurrent benchmark results, and current CORE architecture (2026-06-05).
 - [ ] `docs/ARCHITECTURE.md`.
@@ -469,7 +483,7 @@ Goal: live multi-tenant sandbox is deployed, demoable, observable, and shareable
 
 ## Handwrite Zones To Protect
 
-Use `docs/coach.md` behavior for these areas. If Kai asks for generated code here, push back once with the specific learning/craft reason, then comply if he still wants it.
+Use `docs/private/coach.md` behavior for these areas. If Kai asks for generated code here, push back once with the specific learning/craft reason, then comply if he still wants it.
 
 - [ ] Scoring function.
 - [ ] Match confirmation transaction.

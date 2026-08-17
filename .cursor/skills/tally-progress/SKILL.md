@@ -9,15 +9,15 @@ description: Applies Tally repo coaching, spec adherence, handwrite/generate bou
 
 At the start of any Tally feature, review, progress assessment, or implementation task:
 
-1. Read `docs/coach.md`.
+1. Read `docs/private/coach.md`.
 2. Read the relevant sections of `docs/spec.md`.
 3. Read `docs/progress.md`.
 
-Use `docs/spec.md` as the product/architecture source of truth. Use `docs/coach.md` for coaching behavior, learning goals, and handwrite/generate enforcement. Use `docs/progress.md` as the living implementation tracker.
+Use `docs/spec.md` as the product/architecture source of truth. Use `docs/private/coach.md` for coaching behavior, learning goals, and handwrite/generate enforcement. Use `docs/progress.md` as the living implementation tracker.
 
 ## Operating Rules
 
-- Follow `docs/coach.md` interaction style: structured, step-by-step, high-signal, no hype.
+- Follow `docs/private/coach.md` interaction style: structured, step-by-step, high-signal, no hype.
 - Do not apply code changes unless Kai explicitly asks for implementation.
 - When a request touches a HANDWRITE zone, push back once with the specific learning or craft reason before generating code. If Kai still wants it, comply.
 - When coaching HANDWRITE or handwrite-adjacent work, do not provide whole function/block code answers unless Kai explicitly asks for them. Prefer small hints, invariants, signatures, pseudocode, tests, or line-level bug descriptions. Even when identifying bugs, explain the fix without pasting the full corrected block unless requested.
@@ -91,7 +91,7 @@ If any of those are missing, keep the item unchecked.
 ## Common References
 
 - Current spec: `docs/spec.md`
-- Coaching and handwrite/generate rules: `docs/coach.md`
+- Coaching and handwrite/generate rules: `docs/private/coach.md`
 - Living progress checklist: `docs/progress.md`
 - Local verification: `go test ./...`
 - Local services: `docker compose up -d`
