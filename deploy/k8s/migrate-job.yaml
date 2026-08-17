@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tally-migrate
+  namespace: tally
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: postgres:16
+          command: ["/bin/bash", "/scripts/migrate.sh"]
+          env:
+            - name: DATABASE_URL
+              value: postgres://tally:tally@postgres:5432/tally
+            - name: MIGRATIONS_DIR
+              value: /migrations
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: migrations
+          configMap:
+            name: tally-migrations
+        - name: script
+          configMap:
+            name: tally-migrate-script

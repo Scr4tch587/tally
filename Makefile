@@ -1,4 +1,6 @@
-.PHONY: run test migrate bench bench-load
+.PHONY: run test migrate bench bench-load k8s-up k8s-down
+
+KIND_CLUSTER ?= tally
 
 PAIRS ?= 1000
 WORKERS ?= 16
@@ -31,6 +33,22 @@ bench:
 		-base-url $(BASE_URL) \
 		-database-url $(DATABASE_URL) \
 		-output $(OUTPUT)
+
+k8s-up:
+	kind get clusters | grep -qx $(KIND_CLUSTER) || kind create cluster --name $(KIND_CLUSTER)
+	docker build -t tally:local .
+	kind load docker-image tally:local --name $(KIND_CLUSTER)
+	kubectl apply -f deploy/k8s/namespace.yaml
+	kubectl -n tally create configmap tally-migrations --from-file=migrations/ --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n tally create configmap tally-migrate-script --from-file=scripts/migrate.sh --dry-run=client -o yaml | kubectl apply -f -
+	kubectl -n tally delete job tally-migrate --ignore-not-found
+	kubectl apply -f deploy/k8s/
+	kubectl -n tally rollout status statefulset/postgres --timeout=180s
+	kubectl -n tally wait --for=condition=complete job/tally-migrate --timeout=180s
+	kubectl -n tally rollout status deployment/tally --timeout=180s
+
+k8s-down:
+	kind delete cluster --name $(KIND_CLUSTER)
 
 bench-load:
 	go run ./cmd/bench \
