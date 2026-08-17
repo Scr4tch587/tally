@@ -1,6 +1,6 @@
 # Tally Progress Tracker
 
-Last assessed: 2026-06-05
+Last assessed: 2026-08-11
 
 This document tracks implementation progress against `docs/spec.md`. Update it after every meaningful repo change so the next work session starts from reality, not memory.
 
@@ -34,6 +34,7 @@ Implemented so far:
 - Store methods `FindPendingMatchCandidates` and `FindRecentPendingEvents` query durable Postgres state for reconciliation.
 - Deterministic benchmark input generation, benchmark metric computation, JSON reports, `cmd/bench`, `make bench`, and `make bench-load` exist.
 - Best clean benchmark run so far: shuffled arrival, 16 workers, 160 true pairs / 832 total events, 1615.23 events/sec, 958ms p99 match latency, 100% match rate, 0 false positives.
+- Sentry observability (`internal/observe`) is wired but env-gated: zerolog error/fatal/panic forwarding with breadcrumbs, `sentryhttp` panic middleware on the router, worker panic capture, native performance spans across the reconciliation path (HTTP and worker transactions), a Sentry Crons heartbeat on the pending worker, per-request scope tags (`tenant_id`, `source_type`) with event-ID context on ingestion, release tagging from git build info, flush on shutdown. Disabled unless `SENTRY_DSN` is set. Note: Sentry was not in the original spec observability plan (zerolog + OTel + CloudWatch); the spec was rewritten 2026-08-11 to make Sentry the error-monitoring and trace-backend layer (see spec §14.1 and D011), with CloudWatch retained for business metrics and infra alarms.
 
 Major gaps:
 
@@ -93,6 +94,12 @@ Acceptance gates (all passed 2026-06-05):
 - [x] Live concurrent benchmarks on 2026-06-05 with worker enabled: paired 16-worker 100-pair and shuffled 16-worker 100-pair both 100% match rate, 0 false positives, 0 missed, 0 HTTP errors.
 - [x] Stepped load benchmark on 2026-06-05 (shuffled, 16 workers): best clean run 160 true pairs / 832 total events, 1615.23 events/sec, 958ms p99; first non-clean step 165 true pairs (1 false positive).
 - [x] `README.md` updated on 2026-06-05 to reflect reconciliation engine, worker, and new benchmark numbers.
+- [x] `go test ./... -count=1` on 2026-08-11 with Docker Postgres/Redis up passed after Sentry integration (`internal/observe`, logger, router, worker, `main.go`).
+- [x] Server boot smoke test on 2026-08-11 with `SENTRY_DSN` set: startup logged `sentry error monitoring enabled`, `GET /health` returned `200`; without `SENTRY_DSN` the integration is a no-op.
+- [x] `go test ./... -count=1` on 2026-08-11 passed after adding reconcile performance spans, worker Crons heartbeat, and ingestion scope tags.
+- [x] HTTP smoke test on 2026-08-11 with `SENTRY_TRACES_SAMPLE_RATE=1.0`: correlated ledger/processor pair returned `201`/`201` and both events became `MATCHED` with one match row — span instrumentation does not disturb the matching path.
+- [x] Confirmed sentry-go v0.48 has no Go profiling support (`ProfilesSampleRate` absent); profiling deliberately not planned.
+- [x] Correctness gate on 2026-08-11 after span instrumentation (Sentry disabled, shuffled, 16 workers, 100 pairs): clean — 100% match rate, 0 false positives, 0 missed, 0 HTTP errors.
 
 ## Phase 1: CORE Foundations
 
@@ -300,16 +307,28 @@ Not required for the resume swap, even though they remain Phase 1 spec work:
 ### Observability
 
 - [x] Basic zerolog logger exists.
+- [x] Sentry init from `SENTRY_DSN` / `SENTRY_ENVIRONMENT` / `SENTRY_TRACES_SAMPLE_RATE` env (`internal/observe/sentry.go`), no-op when unset.
+- [x] zerolog error/fatal/panic events forwarded to Sentry with breadcrumbs (`sentryzerolog` writer in `internal/logger`).
+- [x] HTTP panic capture and optional request tracing via `sentryhttp` middleware on the chi router.
+- [x] Background worker panic capture and re-raise (`observe.CapturePanic` in `StartPendingWorker`).
+- [x] Sentry release tagged from git commit via Go build info; events flushed on shutdown.
+- [x] Native sentry-go performance spans on the reconciliation path: `POST /events` transactions with child spans for event fetch, candidate query, scoring, and match confirmation; worker runs report `reconcile.pending_worker` transactions.
+- [x] Sentry Crons heartbeat monitor on the pending reconciliation worker (per-minute check-in, missed-check-in alerting, 2-minute margin).
+- [x] Ingestion requests tag Sentry scope with `tenant_id`/`source_type` and attach event IDs as context.
+- [x] Operational failures log at error level so they reach Sentry (`POST /events` insert failure, health-check Postgres/Redis failures upgraded from info).
 - [ ] Structured logging on ingestion path.
 - [ ] Structured logging on candidate lookup/add/remove.
 - [ ] Structured logging on match confirmation.
 - [ ] Structured logging on discrepancy creation/resolution.
 - [ ] Structured logging on entity resolution.
-- [ ] OpenTelemetry tracing setup.
+- [ ] OpenTelemetry tracing setup exporting to Sentry via the `sentryotel` span processor.
 - [ ] Spans across ingestion, matching, entity resolution, graph materialization, and gRPC queries.
+- [ ] Sentry alert rules: new issue types, error-rate spike, p99 transaction latency breach on match and gRPC paths.
+- [ ] Distributed tracing across PRODUCT → CORE gRPC via sentry-trace propagation.
+- [ ] End-to-end Sentry delivery verified against a real Sentry project (needs a real DSN).
 - [ ] Core metrics counters and histograms.
 - [ ] Metric snapshots persisted every 10 seconds.
-- [ ] CloudWatch dashboard and alarms.
+- [ ] CloudWatch dashboard and alarms for business metrics (match rate, discrepancy spike, pending window overflow, ingestion stall).
 
 ### Benchmark Harness
 
@@ -383,6 +402,9 @@ Goal: operator can ask a graph question, watch the graph animate, drill into nod
 - [ ] Save notes.
 - [ ] Save tags.
 - [ ] Save pinned insights.
+- [ ] Sentry Next.js SDK wired for PRODUCT client and server errors.
+- [ ] Operator agent tool executions instrumented as Sentry spans.
+- [ ] Sentry Session Replay enabled on the operator UI.
 
 ## Phase 4: Agentic Sandbox
 
@@ -400,6 +422,7 @@ Goal: demo user can generate or perturb a sandbox business without touching prod
 - [ ] Fast-forward six months respecting cadences.
 - [ ] Scope adversarial scenarios for testing.
 - [ ] No accidental escalation path from operator mode into sandbox mutation mode.
+- [ ] Sandbox agent tool executions instrumented as Sentry spans.
 
 ## Phase 5: Deployment And Distribution
 
@@ -419,8 +442,11 @@ Goal: live multi-tenant sandbox is deployed, demoable, observable, and shareable
 - [ ] Live sandbox CTA.
 - [ ] Production CloudWatch logs.
 - [ ] Production CloudWatch metrics.
-- [ ] Production alarms.
-- [ ] Production dashboard.
+- [ ] Production CloudWatch alarms for business metrics.
+- [ ] Production CloudWatch dashboard.
+- [ ] Sentry `production` environment split with release tagging from the deploy pipeline.
+- [ ] Sentry alert rules live in production (new issues, error-rate spike, latency breach).
+- [ ] Distributed trace verified end-to-end in production: browser → tRPC → gRPC → CORE.
 - [ ] End-to-end smoke test against deployed sandbox.
 - [ ] LinkedIn post.
 - [ ] Coffee chat with CFM student.

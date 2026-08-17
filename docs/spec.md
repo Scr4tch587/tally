@@ -65,6 +65,7 @@ Tally is intentionally both:
 
 - **Every metric claimed on the resume is measured by the benchmark harness**, not estimated.
 - **Structured logging and tracing on every critical path**: ingestion, matching, entity resolution, graph materialization, gRPC queries, agent tool execution.
+- **Errors are never just log lines**: every error-level event, panic, and crash on a critical path is captured in Sentry with release, environment, and breadcrumb context.
 
 ---
 
@@ -186,7 +187,8 @@ tally/
       redis.go           # sorted set operations
     observe/
       metrics.go         # metric collection
-      tracing.go         # OpenTelemetry setup
+      sentry.go          # Sentry init, panic capture, flush
+      tracing.go         # OpenTelemetry setup, exported to Sentry
   product/
     app/                 # Next.js app router pages
     components/          # graph canvas, panels, controls
@@ -750,12 +752,24 @@ The sandbox agent is a dev/demo tool for manipulating synthetic businesses. It i
 
 ### 14.1 Observability
 
-Keep the existing observability stance:
+Three layers, each owning the question it is best at answering:
 
-- Structured logging on all critical paths
-- OpenTelemetry tracing
-- CloudWatch alerting
-- CloudWatch dashboard
+**zerolog — structured logging** on all critical paths, unchanged.
+
+**Sentry — error monitoring and trace backend.** Answers "is the code failing, where, and since which release?"
+
+- Error capture on every critical path: error/fatal/panic zerolog events forward to Sentry with lower-level logs attached as breadcrumbs (implemented in CORE).
+- Panic capture: `sentryhttp` middleware on the ops HTTP surface; background worker goroutines capture and re-raise (implemented in CORE).
+- Performance spans on the reconciliation path, instrumented natively with sentry-go: `POST /events` transactions carry child spans for event fetch, candidate query, scoring, and match confirmation; the background worker reports its own `reconcile.pending_worker` transactions (implemented in CORE).
+- Error context enrichment: ingestion requests tag their Sentry scope with `tenant_id` and `source_type` and attach event IDs as context, so production errors are filterable per tenant and source (implemented in CORE).
+- Sentry Crons monitor on the pending reconciliation worker: a per-minute heartbeat check-in, so a stalled or dead worker raises a missed-check-in issue instead of silently halting reconciliation (implemented in CORE).
+- When the gRPC boundary and PRODUCT land, OpenTelemetry instrumentation exports to Sentry via the official `sentryotel` span processor so cross-service tracing stays vendor-neutral: spans across ingestion, matching, entity resolution, graph materialization, and gRPC queries, with CORE-internal spans migrating under it.
+- Distributed tracing across the PRODUCT → CORE boundary via sentry-trace propagation, so one trace covers browser request → tRPC → gRPC → reconciliation-layer reads.
+- PRODUCT: Sentry Next.js SDK for client and server errors; operator and sandbox agent tool executions instrumented as spans so a failing agent turn is traceable to the tool call that broke; Session Replay on the operator UI so a reported UI bug arrives with the session that produced it.
+- Releases tagged with the git commit, environments split `development`/`production`, release health visible per deploy.
+- Sentry alert rules: new issue types, error-rate spikes, and p99 transaction latency breaches on the match and gRPC query paths.
+
+**CloudWatch — business metrics and infrastructure.** Answers "is the ledger healthy?"
 
 Core metrics remain first-class:
 
@@ -769,14 +783,20 @@ Core metrics remain first-class:
 - `entity_resolution_precision`
 - `subgraph_query_latency_ms`
 
-CloudWatch alarms should cover:
+Alarm ownership:
 
-- Match rate degradation
-- p99 match latency breach
-- Discrepancy spike
-- Pending window overflow
-- Ingestion stall
-- gRPC query latency regression
+|Alarm|Owner|
+|---|---|
+|New crash / error-rate spike|Sentry issue alerts|
+|p99 match latency breach|Sentry transaction latency alert|
+|gRPC query latency regression|Sentry transaction latency alert|
+|Pending worker stall or death|Sentry Crons missed check-in|
+|Match rate degradation|CloudWatch|
+|Discrepancy spike|CloudWatch|
+|Pending window overflow|CloudWatch|
+|Ingestion stall|CloudWatch|
+
+CloudWatch keeps the business-metrics dashboard; Sentry owns the error and latency dashboard.
 
 ### 14.2 Benchmark harness
 
@@ -834,7 +854,7 @@ Production artifact for v1:
 - CORE and PRODUCT deployed behind clean service boundaries
 
 **Handwrite**: benchmark harness design, alarm thresholds, deployment acceptance criteria, dashboard contents.
-**Generate**: OTel plumbing, CloudWatch definitions, CDK code, Kubernetes manifests.
+**Generate**: OTel plumbing, Sentry SDK wiring (CORE and PRODUCT), CloudWatch definitions, CDK code, Kubernetes manifests.
 
 ---
 
@@ -886,6 +906,7 @@ Deliverables:
 - React Flow visualization
 - Operator agent with 5 primitive operations
 - Three hero demo flows
+- Sentry Next.js SDK wired (client/server errors, agent tool execution spans, Session Replay on the operator UI)
 
 **Handwrite**: operator prompt, DSL, tool definitions, permission boundary.
 **Generate**: product app scaffolding, graph wiring, Claude integration, auth UI.
@@ -914,7 +935,7 @@ Deliverables:
 Deliverables:
 
 - Deploy CORE and PRODUCT to EKS Fargate
-- Production observability
+- Production observability: Sentry production environment with release tagging and alert rules; CloudWatch metrics, alarms, dashboard
 - `tally.kaizhang.ca` landing page with live demo CTA
 - LinkedIn post
 - Coffee chat with CFM student
@@ -974,13 +995,14 @@ Secondary targets:
 |Primary datastore|Postgres 16+|Ledger truth + graph schema + strong transactional semantics|
 |Cache/window|Redis 7+|Sorted sets for candidate windowing, rebuildable from Postgres|
 |Logging|zerolog|Structured JSON logs|
-|Tracing|OpenTelemetry|Vendor-neutral tracing story|
+|Error monitoring|Sentry|Errors, panics, release health, latency alerts across CORE and PRODUCT|
+|Tracing|OpenTelemetry → Sentry|Vendor-neutral instrumentation, Sentry as the trace backend via `sentryotel`|
 |PRODUCT|Next.js + TypeScript|Fast product iteration and deploy ergonomics|
 |App API|tRPC|Typed server/client contract inside PRODUCT|
 |Graph UI|React Flow|Fast path to graph interaction and animation|
 |Operator model|Claude API|Agentic UX for graph exploration|
 |Infra|AWS CDK + EKS Fargate|Keep Kubernetes signal without node management|
-|Metrics/alerts|CloudWatch|Operational story for live deployment|
+|Metrics/alerts|CloudWatch|Business metrics and infra alarms for live deployment|
 
 ---
 
@@ -1007,6 +1029,8 @@ These belong in `docs/DECISIONS.md`.
 **D009: Sandbox agent gets broader permissions, but only in sandbox mode.** This is acceptable because it is explicitly a synthetic-data tool, not a production operator.
 
 **D010: CloudWatch embedded metrics + OTel over extra sidecars where possible.** Keep the deployment simple while preserving enough observability for a portfolio project and live demo.
+
+**D011: Sentry for errors and traces, CloudWatch for business metrics.** Sentry owns error monitoring, panic capture, release health, and transaction-latency alerting, with OTel instrumentation exported through the `sentryotel` bridge so the tracing story stays vendor-neutral. CloudWatch owns reconciliation business metrics (match rate, pending window, discrepancy counts) and infra alarms. One tool per question: "is the code failing?" → Sentry; "is the ledger healthy?" → CloudWatch. Added 2026-08-11; the CORE error-monitoring slice is already implemented.
 
 ---
 

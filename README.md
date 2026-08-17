@@ -20,6 +20,7 @@ Tally ingests canonical transaction events from independent sources (ledger, pro
 | Postgres-backed pending candidate lookup | Done |
 | Background pending reconciliation worker | Done |
 | Benchmark harness with ground-truth correctness checks | Done |
+| Sentry observability (error logs, panics, reconcile spans, worker cron monitor) | Done |
 | Per-source connectors (ledger / processor / bank parsers) | Not started |
 | Window expiry → discrepancies | Not started |
 | Full crash recovery (Redis rebuild from Postgres on startup) | Not started |
@@ -227,6 +228,30 @@ Run tests (requires Postgres and Redis):
 go test ./...
 ```
 
+### Error monitoring (Sentry)
+
+Sentry is optional and disabled unless `SENTRY_DSN` is set, so local dev and benchmarks are unaffected by default.
+
+```bash
+SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project> go run .
+```
+
+| Variable | Effect |
+|----------|--------|
+| `SENTRY_DSN` | Enables Sentry when set; no-op otherwise |
+| `SENTRY_ENVIRONMENT` | Environment tag (default `development`) |
+| `SENTRY_TRACES_SAMPLE_RATE` | Enables performance tracing on HTTP requests when > 0 (e.g. `0.2`) |
+
+What gets reported:
+
+- Every zerolog `error`/`fatal`/`panic` log (reconciliation engine, background worker, handlers) via the official `sentryzerolog` writer, with lower-level logs attached as breadcrumbs.
+- HTTP handler panics with request context, via `sentryhttp` middleware on the chi router.
+- Background worker panics, captured and re-raised.
+- With tracing enabled: performance transactions on `POST /events` and worker runs, with child spans for event fetch, candidate query, scoring, and match confirmation.
+- A Sentry Crons heartbeat (`pending-reconcile-worker`, per-minute check-in) so a stalled worker raises a missed-check-in alert.
+- Ingestion errors carry `tenant_id`/`source_type` tags and event-ID context for per-tenant filtering.
+- The release is tagged with the git commit via Go build info; events flush on shutdown.
+
 ---
 
 ## Key design decisions
@@ -257,8 +282,9 @@ go test ./...
 | Postgres | 16 |
 | Redis | 7 (sorted sets for candidate windowing) |
 | Logging | zerolog |
+| Error monitoring | Sentry (`sentry-go` + `sentryzerolog` + `sentryhttp`) |
 
-Planned (per spec, not wired): OpenTelemetry, gRPC, Next.js product surface, AWS CDK / EKS Fargate.
+Planned (per spec, not wired): OpenTelemetry tracing exported to Sentry via `sentryotel`, gRPC, Next.js product surface, AWS CDK / EKS Fargate.
 
 ---
 

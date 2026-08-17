@@ -8,14 +8,23 @@ import (
 	"syscall"
 	"tally/internal/api"
 	"tally/internal/logger"
+	"tally/internal/observe"
 	"tally/internal/reconcile"
 	"tally/internal/store"
 	"time"
 )
 
 func main() {
+	sentryEnabled, sentryErr := observe.InitSentry()
+	defer observe.FlushSentry()
 	log := logger.New()
 	log.Info().Msg("Tally Ready")
+	if sentryErr != nil {
+		log.Error().Err(sentryErr).Msg("sentry init failed")
+	}
+	if sentryEnabled {
+		log.Info().Msg("sentry error monitoring enabled")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pool, err := store.Connect(ctx)
