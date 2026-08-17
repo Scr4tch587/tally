@@ -1,0 +1,13 @@
+.git
+.cache
+.claude
+.cursor
+.DS_Store
+bench-results
+docs
+scratch
+deploy
+Dockerfile
+docker-compose.yml
+README.md
+resume-bullets-datadog.md
