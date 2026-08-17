@@ -32,3 +32,6 @@ bench-results/
 
 # Dependency/vendor snapshots only if explicitly adopted later
 vendor/
+
+# Private working docs (resume drafts, coaching guides) — never commit
+docs/private/
