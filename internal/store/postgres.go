@@ -8,12 +8,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"os"
 	"tally/internal/event"
 	"time"
 )
 
 func Connect(ctx context.Context) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, "postgres://tally:tally@localhost:5432/tally")
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://tally:tally@localhost:5432/tally"
+	}
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, err
 	}

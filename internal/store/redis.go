@@ -4,11 +4,16 @@ import (
 	"context"
 	"fmt"
 	"github.com/redis/go-redis/v9"
+	"os"
 	"tally/internal/event"
 )
 
 func NewRedisClient() *redis.Client {
-	return redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	return redis.NewClient(&redis.Options{Addr: addr})
 }
 
 func candidateKey(tenantID string, asset string, amountBucket int64) string {
