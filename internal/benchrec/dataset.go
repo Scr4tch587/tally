@@ -4,8 +4,10 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -51,6 +53,7 @@ type LoadStats struct {
 	OneToOneGroups      int `json:"one_to_one_groups"`
 	SignDirectionConfl  int `json:"sign_direction_conflicts"`
 	AmountParseFailures int `json:"amount_parse_failures"`
+	WindowDays          int `json:"window_days"`
 	EmptyCounterparty   int `json:"empty_counterparty_fallbacks"`
 }
 
@@ -78,6 +81,13 @@ func parseAmountMinor(raw string) (int64, bool, error) {
 	return whole*100 + frac, groups[1] == "-", nil
 }
 
+func expectNegative(side, debitOrCredit string) bool {
+	if side == SideA {
+		return debitOrCredit == "DR"
+	}
+	return debitOrCredit == "CR"
+}
+
 func parseValueDate(raw string) (time.Time, error) {
 	return time.ParseInLocation("2006-01-02", strings.TrimSpace(raw), time.UTC)
 }
@@ -86,6 +96,7 @@ type groupShape struct {
 	aRows int
 	bRows int
 	rows  int
+	date  string
 }
 
 func scanShapes(path string) (map[string]*groupShape, []string, int, error) {
@@ -126,9 +137,15 @@ func scanShapes(path string) (map[string]*groupShape, []string, int, error) {
 		shape.rows++
 		if field(record, index, "A_id") != "" {
 			shape.aRows++
+			if shape.date == "" {
+				shape.date = strings.TrimSpace(field(record, index, "A_valueDate"))
+			}
 		}
 		if field(record, index, "B_id") != "" {
 			shape.bRows++
+			if shape.date == "" {
+				shape.date = strings.TrimSpace(field(record, index, "B_valueDate"))
+			}
 		}
 	}
 
@@ -139,7 +156,7 @@ func isOneToOne(shape *groupShape) bool {
 	return shape != nil && shape.rows == 2 && shape.aRows == 1 && shape.bRows == 1
 }
 
-func Load(path string, limit int) (*Dataset, error) {
+func Load(path string, limit int, seed int64) (*Dataset, error) {
 	shapes, order, rows, err := scanShapes(path)
 	if err != nil {
 		return nil, err
@@ -149,17 +166,25 @@ func Load(path string, limit int) (*Dataset, error) {
 		Stats: LoadStats{RowsRead: rows, DistinctMatchIDs: len(shapes)},
 	}
 
-	selected := make(map[string]bool)
+	oneToOne := make([]string, 0)
 	for _, matchID := range order {
-		if !isOneToOne(shapes[matchID]) {
-			continue
+		if isOneToOne(shapes[matchID]) {
+			oneToOne = append(oneToOne, matchID)
 		}
-		dataset.Stats.OneToOneGroups++
-		if limit > 0 && len(selected) >= limit {
-			continue
-		}
+	}
+	dataset.Stats.OneToOneGroups = len(oneToOne)
+
+	chosen := oneToOne
+	window := map[string]bool{}
+	if limit > 0 && limit < len(oneToOne) {
+		chosen, window = selectDateWindow(oneToOne, shapes, limit, seed)
+	}
+
+	selected := make(map[string]bool, len(chosen))
+	for _, matchID := range chosen {
 		selected[matchID] = true
 	}
+	dataset.Stats.WindowDays = len(window)
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -175,7 +200,6 @@ func Load(path string, limit int) (*Dataset, error) {
 	index := columnIndex(header)
 
 	building := make(map[string]*Pair)
-	valueDates := make(map[time.Time]bool)
 	pending := make([]Leg, 0)
 
 	for {
@@ -210,7 +234,6 @@ func Load(path string, limit int) (*Dataset, error) {
 				} else {
 					pair.B = leg
 				}
-				valueDates[leg.ValueDate] = true
 				continue
 			}
 
@@ -225,13 +248,40 @@ func Load(path string, limit int) (*Dataset, error) {
 	}
 
 	for _, leg := range pending {
-		if limit > 0 && !valueDates[leg.ValueDate] {
+		if len(window) > 0 && !window[leg.ValueDate.Format("2006-01-02")] {
 			continue
 		}
 		dataset.Distractors = append(dataset.Distractors, leg)
 	}
 
 	return dataset, nil
+}
+
+func selectDateWindow(oneToOne []string, shapes map[string]*groupShape, limit int, seed int64) ([]string, map[string]bool) {
+	byDate := make(map[string][]string)
+	for _, matchID := range oneToOne {
+		date := shapes[matchID].date
+		byDate[date] = append(byDate[date], matchID)
+	}
+
+	dates := make([]string, 0, len(byDate))
+	for date := range byDate {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+
+	rng := rand.New(rand.NewSource(seed))
+	start := rng.Intn(len(dates))
+
+	chosen := make([]string, 0, limit)
+	window := make(map[string]bool)
+	for i := 0; i < len(dates) && len(chosen) < limit; i++ {
+		date := dates[(start+i)%len(dates)]
+		window[date] = true
+		chosen = append(chosen, byDate[date]...)
+	}
+
+	return chosen, window
 }
 
 func readLeg(record []string, index map[string]int, side, matchID string, stats *LoadStats) (Leg, error) {
@@ -250,7 +300,7 @@ func readLeg(record []string, index map[string]int, side, matchID string, stats 
 	if debitOrCredit == "DR" {
 		direction = "debit"
 	}
-	if negative != (debitOrCredit == "DR") {
+	if negative != expectNegative(side, debitOrCredit) {
 		stats.SignDirectionConfl++
 	}
 

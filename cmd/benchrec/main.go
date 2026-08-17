@@ -92,7 +92,7 @@ func parseFlags() config {
 	flag.IntVar(&cfg.limit, "limit", 500, "number of 1:1 ground-truth pairs to replay (0 = all)")
 	flag.BoolVar(&cfg.distractors, "distractors", true, "also replay N:M and one-sided legs as ambient traffic")
 	flag.IntVar(&cfg.workers, "workers", 16, "fixed number of POST workers")
-	flag.Int64Var(&cfg.seed, "seed", 42, "arrival shuffle seed")
+	flag.Int64Var(&cfg.seed, "seed", 42, "seed for pair sampling and arrival shuffle")
 	flag.BoolVar(&cfg.shuffle, "shuffle", true, "shuffle arrival order")
 	flag.StringVar(&cfg.baseURL, "base-url", "http://localhost:8080", "core HTTP base URL")
 	flag.StringVar(&cfg.databaseURL, "database-url", "postgres://tally:tally@localhost:5432/tally", "Postgres URL")
@@ -113,7 +113,7 @@ func run(ctx context.Context, cfg config) error {
 	runID := fmt.Sprintf("benchrec-%d", time.Now().UnixMilli())
 
 	fmt.Printf("loading %s\n", cfg.dataPath)
-	dataset, err := benchrec.Load(cfg.dataPath, cfg.limit)
+	dataset, err := benchrec.Load(cfg.dataPath, cfg.limit, cfg.seed)
 	if err != nil {
 		return err
 	}
