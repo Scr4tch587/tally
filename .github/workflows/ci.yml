@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: tally
+          POSTGRES_USER: tally
+          POSTGRES_PASSWORD: tally
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tally -d tally"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+      - name: Apply migrations
+        run: ./scripts/migrate.sh
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./... -count=1
+
+  bench-gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: tally
+          POSTGRES_USER: tally
+          POSTGRES_PASSWORD: tally
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tally -d tally"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+      - name: Apply migrations
+        run: ./scripts/migrate.sh
+      - name: Start server
+        run: |
+          go build -o /tmp/tally .
+          /tmp/tally > /tmp/tally.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/health && break
+            sleep 1
+          done
+          curl -sf http://localhost:8080/health
+      - name: Correctness gate (shuffled, 16 workers, 100 pairs)
+        run: make bench PAIRS=100 WORKERS=16 ARRIVAL=shuffled OUTPUT=bench-results/ci-shuffled.json
+      - name: Correctness gate (paired, 16 workers, 100 pairs)
+        run: make bench PAIRS=100 WORKERS=16 ARRIVAL=paired OUTPUT=bench-results/ci-paired.json
+      - name: Assert clean runs
+        run: |
+          jq -e '.clean == true' bench-results/ci-shuffled.json
+          jq -e '.clean == true' bench-results/ci-paired.json
+      - name: Server log on failure
+        if: failure()
+        run: cat /tmp/tally.log
+      - name: Upload bench reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-reports
+          path: bench-results/ci-*.json
