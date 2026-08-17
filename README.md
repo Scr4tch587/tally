@@ -21,6 +21,9 @@ Tally ingests canonical transaction events from independent sources (ledger, pro
 | Background pending reconciliation worker | Done |
 | Benchmark harness with ground-truth correctness checks | Done |
 | Sentry observability (error logs, panics, reconcile spans, worker cron monitor) | Done |
+| CI: tests + live-server correctness benchmark gate on every push | Done |
+| Multi-stage Docker build (distroless runtime) | Done |
+| Kubernetes manifests, verified end-to-end on a local kind cluster | Done |
 | Per-source connectors (ledger / processor / bank parsers) | Not started |
 | Window expiry → discrepancies | Not started |
 | Full crash recovery (Redis rebuild from Postgres on startup) | Not started |
@@ -228,6 +231,23 @@ Run tests (requires Postgres and Redis):
 go test ./...
 ```
 
+Postgres and Redis addresses are configurable via `DATABASE_URL` and `REDIS_ADDR`; both default to the local Docker Compose ports.
+
+### CI
+
+Every push runs two GitHub Actions jobs against Postgres/Redis service containers: `go vet` plus the full test suite, and a benchmark gate that boots the server, runs the 100-pair 16-worker correctness benchmark for both shuffled and paired arrival, and fails unless both runs are clean (100% match rate, 0 false positives, 0 HTTP errors). Reports are uploaded as build artifacts.
+
+### Kubernetes (local)
+
+`deploy/k8s/` holds manifests for the full stack: Postgres StatefulSet with a PVC and `pg_isready` readiness probe, Redis (deliberately on `emptyDir` — the candidate index is rebuildable from Postgres), a migration Job fed from ConfigMaps, and the tally Deployment with liveness/readiness probes on `/health`.
+
+```bash
+make k8s-up    # create kind cluster, build + load image, deploy, wait for rollout
+make k8s-down  # delete the cluster
+```
+
+Verified end-to-end on kind: a correlated ledger/processor pair posted through the in-cluster service reconciles to `MATCHED` with a persisted match row. Cloud deployment (EKS per spec) is not set up.
+
 ### Error monitoring (Sentry)
 
 Sentry is optional and disabled unless `SENTRY_DSN` is set, so local dev and benchmarks are unaffected by default.
@@ -283,6 +303,9 @@ What gets reported:
 | Redis | 7 (sorted sets for candidate windowing) |
 | Logging | zerolog |
 | Error monitoring | Sentry (`sentry-go` + `sentryzerolog` + `sentryhttp`) |
+| Containers | Multi-stage Docker build on distroless static |
+| Orchestration | Kubernetes (local kind cluster) |
+| CI | GitHub Actions (tests + correctness benchmark gate) |
 
 Planned (per spec, not wired): OpenTelemetry tracing exported to Sentry via `sentryotel`, gRPC, Next.js product surface, AWS CDK / EKS Fargate.
 

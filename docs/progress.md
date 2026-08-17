@@ -100,6 +100,10 @@ Acceptance gates (all passed 2026-06-05):
 - [x] HTTP smoke test on 2026-08-11 with `SENTRY_TRACES_SAMPLE_RATE=1.0`: correlated ledger/processor pair returned `201`/`201` and both events became `MATCHED` with one match row — span instrumentation does not disturb the matching path.
 - [x] Confirmed sentry-go v0.48 has no Go profiling support (`ProfilesSampleRate` absent); profiling deliberately not planned.
 - [x] Correctness gate on 2026-08-11 after span instrumentation (Sentry disabled, shuffled, 16 workers, 100 pairs): clean — 100% match rate, 0 false positives, 0 missed, 0 HTTP errors.
+- [x] Postgres/Redis addresses made configurable via `DATABASE_URL`/`REDIS_ADDR` on 2026-08-17; `go build ./...` passed, localhost defaults unchanged.
+- [x] Multi-stage Dockerfile (distroless static runtime) built successfully on 2026-08-17 (`docker build -t tally:local .`).
+- [x] GitHub Actions CI added 2026-08-17: `test` job (vet + full suite against service containers) and `bench-gate` job (live server, 100-pair 16-worker shuffled and paired correctness runs, `jq` asserts clean). First run on main: both jobs green in 1m26s.
+- [x] Kubernetes manifests (`deploy/k8s/`) deployed to a local kind cluster via `make k8s-up` on 2026-08-17: postgres StatefulSet ready, migration Job completed, tally Deployment rolled out with `/health` probes; correlated ledger/processor pair posted in-cluster returned `201`/`201`, both events `MATCHED`, match row persisted with score 1.0.
 
 ## Phase 1: CORE Foundations
 
