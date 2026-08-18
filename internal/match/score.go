@@ -116,9 +116,11 @@ func Score(a, b *event.CanonicalEvent) (score float64, evidence map[string]any, 
 	} else {
 		score = (amountScore*wAmount + timeScore*wTime + accountScore*wAccount) / (1 - wText)
 	}
-	ok = score >= matchThreshold
+	accountVeto := accountScore == 0
+	ok = score >= matchThreshold && !accountVeto
 
 	evidence = make(map[string]any)
+	evidence["account_veto"] = accountVeto
 	evidence["amount_score"] = amountScore
 	evidence["time_score"] = timeScore
 	evidence["account_score"] = accountScore
