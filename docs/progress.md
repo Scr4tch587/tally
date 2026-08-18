@@ -1,6 +1,6 @@
 # Tally Progress Tracker
 
-Last assessed: 2026-08-17
+Last assessed: 2026-08-18
 
 This document tracks implementation progress against `docs/spec.md`. Update it after every meaningful repo change so the next work session starts from reality, not memory.
 
@@ -29,9 +29,9 @@ Implemented so far:
 - `internal/pipeline` compiles against the current `NewCanonicalEvent` constructor.
 - Serializable `ConfirmMatch` persists `matches` / `match_events`, updates `match_status`, retries once on serialization failure; entity resolution and graph upsert not wired yet.
 - `internal/reconcile` owns matching orchestration: Postgres-backed pending candidate lookup, scoring, `ConfirmMatch`, and Redis cleanup.
-- `POST /events` inserts, adds to Redis, then calls `ReconcilePendingEvent`; the engine is constructed once in `main.go`.
+- `POST /events` inserts and adds to Redis; confirmation happens on the worker sweep rather than inline (changed 2026-08-18 to stop premature matching against a partially-arrived candidate set). The engine is constructed once in `main.go`.
 - Background pending reconciliation worker (`StartPendingWorker`, 250ms interval, 500-event batch) retries recent `PENDING` events.
-- Store methods `FindPendingMatchCandidates` and `FindRecentPendingEvents` query durable Postgres state for reconciliation.
+- Store methods `FindPendingMatchCandidates` and `FindPendingEventsAfter` query durable Postgres state for reconciliation; the latter pages with a keyset cursor.
 - Deterministic benchmark input generation, benchmark metric computation, JSON reports, `cmd/bench`, `make bench`, and `make bench-load` exist.
 - Best clean benchmark run so far: shuffled arrival, 16 workers, 160 true pairs / 832 total events, 1615.23 events/sec, 958ms p99 match latency, 100% match rate, 0 false positives.
 - Sentry observability (`internal/observe`) is wired but env-gated: zerolog error/fatal/panic forwarding with breadcrumbs, `sentryhttp` panic middleware on the router, worker panic capture, native performance spans across the reconciliation path (HTTP and worker transactions), a Sentry Crons heartbeat on the pending worker, per-request scope tags (`tenant_id`, `source_type`) with event-ID context on ingestion, release tagging from git build info, flush on shutdown. Disabled unless `SENTRY_DSN` is set. Note: Sentry was not in the original spec observability plan (zerolog + OTel + CloudWatch); the spec was rewritten 2026-08-11 to make Sentry the error-monitoring and trace-backend layer (see spec §14.1 and D011), with CloudWatch retained for business metrics and infra alarms.
@@ -47,11 +47,40 @@ Major gaps:
 
 Active arc, sequenced ahead of everything else for the Winter 2027 application cycle (spec §15 revised sequencing, D012–D014). Work plan lives in the private guide doc alongside `docs/private/coach.md`.
 
-- [ ] Part 1: BenchRec adapter + `cmd/benchrec` replay runner (generate zone; reuses `internal/bench` exports without modifying that package); honest before-numbers on the 1:1 both-sided subset recorded here, per-stratum (rule vs MANUAL, exact-amount vs fee-gap).
-- [ ] Part 2: scorer rework (HANDWRITE): reference-token similarity, day-granularity time decay, relative amount tolerance; synthetic CI gates must stay green; after-numbers recorded here.
-- [ ] Part 3: scale fixes surfaced by the ~94k-event replay (candidate query indexing, worker rescan behavior), each with before/after measurements.
+- [x] Part 1: BenchRec adapter (`internal/benchrec`) + `cmd/benchrec` replay runner. Reuses `internal/bench` exports unmodified by constructing a `loadgen.Dataset` from BenchRec ground truth. Before-numbers recorded below.
+- [x] Part 2: scorer rework (HANDWRITE): character n-gram reference similarity, permissive threshold, missing-vs-zero text handling, account veto. Both synthetic CI gates stay green.
+- [x] Part 3: scale fix — keyset cursor for the pending sweep, after the worker livelocked at 150k events. Before/after below.
+- [ ] Margin rule (tie-break to pending) — designed, not implemented. The remaining lever on the 4.6% false-positive rate.
+- [ ] Pending expiry — events that can never match are re-swept forever (~22k per pass at full scale). Correctness unaffected.
 
-Dataset: `data/benchrec/` (gitignored; CC BY 4.0). Profiled 2026-08-17: 149,854 rows, 56,074 matches, 83.9% 1:1, 95.1% exact amount agreement across legs, day-granularity dates, single USD account, 29% (date, amount) collisions, reference-token overlap in 100% of sampled 1:1 pairs, 16.6% manual matches.
+Dataset: `data/benchrec/` (gitignored; CC BY 4.0, ICAIF 2023). Profiled 2026-08-17, corrected 2026-08-18 against the full 47,024-pair subset: 149,854 rows, 56,074 matches, 83.9% 1:1, 97.6% exact amount agreement across legs, day-granularity dates (98.9% same value date), single USD account, globally unique leg ids, zero amount-parse failures.
+
+**Two figures in the 2026-08-17 profile were wrong.** Corrected by measurement:
+
+- Collisions: 12.6% of ledger legs face more than one candidate, not "29% of statement lines". Median candidates per leg is 1.
+- Signal shape: whole-token overlap holds for only 25.0% of true pairs, not 100%. Character 6-gram overlap holds for 82.4%. References sit embedded inside longer runs, so token equality misses them.
+- MANUAL is 1,787 pairs (3.8%) of the 1:1 subset, not 16.6%, and lives in `matchRule`; `matchedBy` never contains it.
+- A/B legs use mirrored sign conventions: A has CR positive / DR negative, B has CR negative / DR positive, with zero exceptions across all 149,854 legs.
+
+### BenchRec results (1:1 subset, distractor legs replayed as ambient traffic)
+
+Both runs: 47,024 ground-truth pairs, 55,806 distractor legs, 149,854 events, shuffled arrival, 16 workers, 0 HTTP errors.
+
+| | before (2026-08-17) | after (2026-08-18) |
+|---|---|---|
+| Match rate | 0.8873 | 0.9334 |
+| False positives | 4,615 | 2,111 |
+| False-positive rate | 0.0996 | 0.0459 |
+| Missed | 5,301 | 3,133 |
+| Related, out of scope | 17,548 | 17,899 |
+| Ingest throughput | 1,105 events/sec | 3,081 events/sec |
+| Match latency p50 | 247ms | 161,847ms |
+
+Per stratum (before → after): RULE 1 0.9381 → 0.9768, RULE 3 0.8614 → 0.9437, RULE 4 0.8994 → 0.9376, RULE 6 0.9649 → 0.9825, MANUAL 0.1231 → 0.1337, RULE 5/7/8/9 0.0000 → 0.0000.
+
+**The livelock, worth keeping written down.** Moving confirmation off the ingestion path improved match rate 3.8 points and halved false positives at 666-pair scale, but collapsed the full 47k replay to a 7.3% match rate. Cause: the worker scanned `ORDER BY ingested_at DESC LIMIT 500`, which was adequate while ingestion also matched inline and the worker only caught stragglers. As the sole matching path it starved — newer arrivals continuously displaced the window during ingestion, and once ingestion stopped the newest 500 pending events were a fixed set that could not match, so they were rescanned forever. Measured: 138,652 pending, unchanged after 20 seconds on an idle server. `ASC` would only mirror the failure, with permanently unmatchable old events blocking the head instead. Fixed with keyset pagination on `(ingested_at, event_id)`; the tuple is required because `ingested_at` is not unique under concurrent ingestion, and keyset rather than `OFFSET` because rows leaving the set as they become `MATCHED` shift every subsequent offset.
+
+**Latency regression, stated plainly.** Confirmation on the worker sweep means a bulk backfill queues behind it. Steady state is unaffected (p50 627ms on the 520-event synthetic gate). The worker processes 500 events per 250ms tick sequentially, well under the 3,081 events/sec ingest rate, so a burst builds a backlog. Not yet fixed; the open question is whether the sweep is tick-bound (raise the batch limit at `main.go:46`) or work-bound (parallelize the sweep).
 
 Deferred but still owed, in order: startup Redis rebuild (crash recovery, HANDWRITE); Stripe sandbox processor connector with payout N:M matching and BenchRec-distribution-sampled traffic (D013/D014).
 
