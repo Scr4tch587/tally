@@ -242,7 +242,7 @@ func TestScore(t *testing.T) {
 		}
 	})
 
-	t.Run("one minor unit off below threshold", func(t *testing.T) {
+	t.Run("one minor unit off still matches", func(t *testing.T) {
 		a := mustEvent(t, eventOpts{timestamp: &base, amountMinor: ptrInt64(1250), accountRef: ptrString("cash")})
 		b := mustEvent(t, eventOpts{
 			eventID:       ptrString("evt-b"),
@@ -254,10 +254,10 @@ func TestScore(t *testing.T) {
 		})
 
 		score, _, ok := Score(a, b)
-		if ok {
-			t.Fatalf("expected ok false with 1 minor unit difference, score=%v", score)
+		if !ok {
+			t.Fatalf("expected ok true with 1 minor unit difference, score=%v", score)
 		}
-		assertFloat(t, "score", score, 0.75)
+		assertFloat(t, "score", score, 0.8)
 	})
 
 	t.Run("amount mismatch below threshold", func(t *testing.T) {
@@ -274,7 +274,7 @@ func TestScore(t *testing.T) {
 		if ok {
 			t.Fatalf("expected ok false, score=%v", score)
 		}
-		assertFloat(t, "score", score, 0.5)
+		assertFloat(t, "score", score, 0.6)
 	})
 
 	t.Run("time beyond window below threshold", func(t *testing.T) {
@@ -309,29 +309,175 @@ func TestScore(t *testing.T) {
 		}
 	})
 
-	t.Run("at threshold boundary", func(t *testing.T) {
+	t.Run("just above threshold matches", func(t *testing.T) {
 		a := mustEvent(t, eventOpts{
 			timestamp:   &base,
 			amountMinor: ptrInt64(1250),
 			accountRef:  ptrString("cash"),
 		})
-		midWindow := base.Add(62*time.Second + 500*time.Millisecond)
+		late := base.Add(100 * time.Second)
 		b := mustEvent(t, eventOpts{
 			eventID:       ptrString("evt-b"),
 			sourceType:    ptrString("processor"),
 			sourceEventID: ptrString("src-b"),
 			amountMinor:   ptrInt64(1250),
 			accountRef:    ptrString("cash"),
-			timestamp:     &midWindow,
+			timestamp:     &late,
 		})
 
 		score, _, ok := Score(a, b)
-		assertFloat(t, "score", score, 0.85)
 		if !ok {
-			t.Fatalf("expected ok true at score == threshold, got %v", score)
+			t.Fatalf("expected ok true just above threshold, got %v", score)
+		}
+		if score < matchThreshold {
+			t.Fatalf("score %v should be >= threshold %v", score, matchThreshold)
+		}
+	})
+
+	t.Run("just below threshold does not match", func(t *testing.T) {
+		a := mustEvent(t, eventOpts{
+			timestamp:   &base,
+			amountMinor: ptrInt64(1250),
+			accountRef:  ptrString("cash"),
+		})
+		later := base.Add(105 * time.Second)
+		b := mustEvent(t, eventOpts{
+			eventID:       ptrString("evt-b"),
+			sourceType:    ptrString("processor"),
+			sourceEventID: ptrString("src-b"),
+			amountMinor:   ptrInt64(1250),
+			accountRef:    ptrString("cash"),
+			timestamp:     &later,
+		})
+
+		score, _, ok := Score(a, b)
+		if ok {
+			t.Fatalf("expected ok false just below threshold, got %v", score)
+		}
+		if score >= matchThreshold {
+			t.Fatalf("score %v should be < threshold %v", score, matchThreshold)
 		}
 	})
 }
 
 func ptrString(s string) *string { return &s }
 func ptrInt64(n int64) *int64    { return &n }
+
+// BenchRec is pure ASCII, so byte-slicing in nGrams is safe here. Non-ASCII
+// input would slice multi-byte characters and produce garbage grams.
+func TestReferenceRuns(t *testing.T) {
+	got := referenceRuns("V418067061617140 4839566721VI")
+	want := []string{"v418067061617140", "4839566721vi"}
+	if len(got) != len(want) {
+		t.Fatalf("runs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("runs = %v, want %v", got, want)
+		}
+	}
+
+	if runs := referenceRuns("001446684-767-0 L-7722566049VI"); len(runs) != 5 {
+		t.Fatalf("expected hyphens to split into 5 runs, got %v", runs)
+	}
+}
+
+func TestNGrams(t *testing.T) {
+	grams := nGrams(referenceRuns("41806706 V41806706"), 6)
+	want := []string{"418067", "180670", "806706", "v41806"}
+	if len(grams) != len(want) {
+		t.Fatalf("gram count = %d, want %d: %v", len(grams), len(want), grams)
+	}
+	for _, g := range want {
+		if _, ok := grams[g]; !ok {
+			t.Fatalf("missing gram %q in %v", g, grams)
+		}
+	}
+
+	if g := nGrams([]string{"joqge"}, 6); len(g) != 0 {
+		t.Fatalf("run shorter than k must yield no grams, got %v", g)
+	}
+}
+
+func TestOverlapCoefficient(t *testing.T) {
+	empty := map[string]struct{}{}
+	full := nGrams(referenceRuns("41806706 V41806706"), 6)
+
+	if v := overlapCoefficient(empty, full); v != 0.0 {
+		t.Fatalf("empty set must score 0, got %v", v)
+	}
+	if v := overlapCoefficient(empty, empty); v != 0.0 {
+		t.Fatalf("two empty sets must score 0 and never NaN, got %v", v)
+	}
+	if v := overlapCoefficient(full, full); v != 1.0 {
+		t.Fatalf("identical sets must score 1, got %v", v)
+	}
+}
+
+func TestTextScore(t *testing.T) {
+	base := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
+
+	pair := func(refA, refB string) (*event.CanonicalEvent, *event.CanonicalEvent) {
+		a := mustEvent(t, eventOpts{timestamp: &base, counterpartyRef: ptrString(refA)})
+		b := mustEvent(t, eventOpts{
+			eventID:         ptrString("evt-b"),
+			sourceType:      ptrString("processor"),
+			sourceEventID:   ptrString("src-b"),
+			timestamp:       &base,
+			counterpartyRef: ptrString(refB),
+		})
+		return a, b
+	}
+
+	t.Run("reference embedded in a longer run", func(t *testing.T) {
+		a, b := pair("41806706 V41806706", "V418067061617140 4839566721VI")
+		score, applies := textScore(a, b)
+		if !applies {
+			t.Fatal("expected text component to apply")
+		}
+		if score != 1.0 {
+			t.Fatalf("smaller reference fully absorbed should score 1.0, got %v", score)
+		}
+	})
+
+	t.Run("shared prefix different tail", func(t *testing.T) {
+		a, b := pair("008641132 14476 SKITE52", "TUP 29PL00864113266IFV /606/488740")
+		score, applies := textScore(a, b)
+		if !applies {
+			t.Fatal("expected text component to apply")
+		}
+		if score <= 0.0 {
+			t.Fatalf("shared 6-gram prefix should score above zero, got %v", score)
+		}
+	})
+
+	t.Run("unrelated references score zero", func(t *testing.T) {
+		a, b := pair("JOQGE 5280766176VI", "VOLERY 8929848666FP")
+		score, _ := textScore(a, b)
+		if score != 0.0 {
+			t.Fatalf("unrelated references should score 0, got %v", score)
+		}
+	})
+
+	t.Run("both sides without grams is missing not zero", func(t *testing.T) {
+		a, b := pair("ab cd", "ef gh")
+		score, applies := textScore(a, b)
+		if applies {
+			t.Fatal("no grams on either side must report the component as not applicable")
+		}
+		if score != 0.0 {
+			t.Fatalf("score = %v, want 0.0", score)
+		}
+	})
+
+	t.Run("one side without grams counts as zero evidence", func(t *testing.T) {
+		a, b := pair("41806706 V41806706", "ab cd")
+		score, applies := textScore(a, b)
+		if !applies {
+			t.Fatal("one-sided missing grams must still apply, so blank data cannot outrank weak data")
+		}
+		if score != 0.0 {
+			t.Fatalf("score = %v, want 0.0", score)
+		}
+	})
+}

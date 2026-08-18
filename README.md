@@ -111,7 +111,7 @@ When a new event is ingested (`internal/api/handlers.go`):
 
 6. **Cleanup.** Matched events are removed from Redis. Unmatched pending events are re-added to Redis so future arrivals can find them.
 
-The background worker periodically scans recent `PENDING` events and runs the same reconciliation function.
+Confirmation happens on the background worker, not inline on ingestion. `POST /events` inserts the event and indexes it in Redis, and the worker sweeps `PENDING` events on a 250ms tick. Deciding at ingestion time meant deciding against whatever happened to be pending at that instant, so an already-pending decoy could win uncontested before the true partner had even been POSTed; deferring the decision measurably reduces false positives (see the BenchRec results below). The sweep pages through pending events with a keyset cursor on `(ingested_at, event_id)` rather than repeatedly reading a fixed slice.
 
 ---
 
@@ -130,7 +130,7 @@ The harness lives in `cmd/bench`, `internal/loadgen`, and `internal/bench`. It g
 
 A run is **clean** when match rate = 100%, false positives = 0, missed matches = 0, and HTTP errors = 0.
 
-**Best measured clean runs** (2026-06-05, local Docker Postgres/Redis):
+**Best measured clean runs** (synthetic data, 2026-06-05, local Docker Postgres/Redis):
 
 | Scenario | Result |
 |----------|--------|
@@ -160,12 +160,89 @@ Reports are written to `bench-results/` (default: `bench-results/latest.json`).
 
 ---
 
+## Real-data validation (BenchRec)
+
+The synthetic harness above measures the engine against data it generated itself. BenchRec measures it against real bank statement lines reconciled to real internal ledger entries.
+
+**Dataset.** BenchRec cash reconciliation dataset v1.0, released for an ICAIF 2023 competition, licensed **CC BY 4.0**. Files live in `data/benchrec/` and are gitignored for size. 149,854 rows, 56,074 distinct matches, anonymized with structure preserved.
+
+**Scope of the numbers below, stated up front:**
+
+- **1:1 both-sided subset only** — 47,024 of 56,074 matches (83.9%). N:M and one-sided groups are not scored as ground truth.
+- Those excluded legs *are* still replayed, as ambient traffic. The engine has to decline them, not merely find partners known to exist.
+- **Single account, single currency.** The account component of the scorer contributes no discrimination on this corpus.
+- **Anonymized tokens.** Reference strings are scrambled consistently, so overlap is real but the strings are not human-meaningful.
+- **One institution's custody flows.** Not representative of card, ACH, or crypto reconciliation.
+
+**Replaying the corpus:**
+
+```bash
+go run ./cmd/benchrec -limit 0 -reset -output bench-results/benchrec-after-full.json
+```
+
+`-limit N` replays a contiguous window of value dates instead of the whole corpus, which keeps same-day collision density realistic while running in seconds. `-dump-misses N` writes missed pairs and false positives with their raw reference strings.
+
+### Measured results
+
+Both runs: 47,024 ground-truth pairs, 55,806 distractor legs, 149,854 events, shuffled arrival, 16 workers, local Docker Postgres/Redis, 0 HTTP errors.
+
+| | before (2026-08-17) | after (2026-08-18) |
+|---|---|---|
+| Match rate | 0.8873 | **0.9334** |
+| Confirmed true | 41,723 | **43,891** |
+| False positives | 4,615 | **2,111** |
+| False-positive rate | 0.0996 | **0.0459** |
+| Missed | 5,301 | **3,133** |
+| Ingest throughput | 1,105 events/sec | **3,081 events/sec** |
+
+Per stratum, by the dataset's own `matchRule` provenance:
+
+| Stratum | pairs | before | after |
+|---|---|---|---|
+| RULE 1 | 31,576 | 0.9381 | **0.9768** |
+| RULE 3 | 9,274 | 0.8614 | **0.9437** |
+| RULE 4 | 4,266 | 0.8994 | **0.9376** |
+| RULE 6 | 57 | 0.9649 | **0.9825** |
+| MANUAL | 1,787 | 0.1231 | 0.1337 |
+| RULE 5 / 7 / 8 / 9 | 64 | 0.0000 | 0.0000 |
+
+A third category is reported separately and excluded from the false-positive count: **17,899 "related, out of scope" matches**, where both confirmed events belong to the same `matchId` but that group is N:M rather than 1:1. Those are defensible partial matches, not errors, and folding them into false positives would misstate precision.
+
+**Time to reconcile the corpus end to end** (measured on a separate replay of the same configuration, sampling `PENDING` count every 5s):
+
+| | |
+|---|---|
+| Peak backlog | 144,824 pending at t+68s |
+| Fully drained | t+418s |
+| Drain window | 350s, 122,772 events reconciled |
+| Sustained reconcile rate | ~351 events/sec |
+
+The 22,052 events remaining at the floor have no possible partner — one-sided ledger legs, N:M leftovers, and pairs outside the ±120s candidate window. That is the correct resting state, not a stall.
+
+### What changed between the two runs
+
+1. **Character n-gram reference similarity** added to the scorer. Whole-token overlap holds for only 25.0% of true pairs; character 6-gram overlap holds for 82.4%, because shared references sit embedded inside longer runs.
+2. **Confirmation moved off the ingestion path** onto the worker, so decisions are made once candidates have had a chance to arrive.
+3. **Keyset cursor for the pending sweep**, replacing a fixed `ORDER BY ingested_at DESC LIMIT 500` slice that livelocked once the worker became the sole matching path.
+
+### Honest weaknesses
+
+- **MANUAL is effectively unsolved at 13.4%**, and the cause is retrieval rather than scoring: only 61.9% of those pairs agree within one cent and only 77.2% share a value date, so the candidate query never surfaces most of them. The scorer never sees them to score.
+- **RULE 5, 7, 8 and 9 are structurally unreachable** for the same reason — all 52 RULE 5 pairs agree to the cent but none share a value date, and the candidate window is ±120 seconds.
+- **A 4.6% false-positive rate is not zero**, and this project's stated constraint is that false matches are worse than unmatched events. Refusing to confirm when the top two candidates score within a margin of each other is the obvious next lever and is not yet implemented.
+- **Match latency regressed sharply** when confirmation moved to the worker. See below.
+
+
+---
+
 ## Known limitations
 
 - **No discrepancy path.** Events that never match stay `PENDING`; there is no window-expiry sweep or `discrepancies` table yet.
 - **Partial crash recovery.** The background worker is the first retry primitive, but startup Redis rebuild from Postgres pending events is not implemented.
 - **Redis removal is post-commit.** Not part of the Postgres transaction; a crash between commit and Redis cleanup leaves stale index entries until recovery exists.
-- **Load ceiling.** On seed 42 with 40% decoys, correctness breaks at 165 true pairs (1 false positive) under shuffled 16-worker ingestion.
+- **Load ceiling.** On seed 42 with 40% decoys, correctness breaks at 165 true pairs (1 false positive) under shuffled 16-worker ingestion. This is a synthetic-data figure.
+- **Match latency under burst load.** Because confirmation happens on the worker sweep rather than inline, a large backfill queues behind the sweep. Steady state is unaffected (p50 627ms on the 520-event synthetic gate), but per-match latency during the 149,854-event BenchRec replay was p50 161.8s / p99 320.6s, against p50 247ms / p99 491ms when confirmation ran inline. Per-match latency in that regime measures queue depth rather than engine speed; time-to-drain is the meaningful figure, and it is reported in the BenchRec section above. The sweep is work-bound rather than tick-bound — it sustains ~351 events/sec, so 500 attempts take roughly 1.4s against a 250ms tick and ticks already run back-to-back. Raising the batch limit would not help; parallelizing the sweep would. Not yet done.
+- **No pending expiry.** Events that can never match are re-attempted on every sweep forever. At full BenchRec scale that is roughly 22,000 events of wasted work per pass. Correctness is unaffected.
 
 ---
 

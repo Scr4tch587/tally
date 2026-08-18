@@ -86,12 +86,6 @@ func (h *Handler) PostEvent(w http.ResponseWriter, r *http.Request) {
 		h.Log.Error().Err(err).Msg("Adding event failed")
 		return
 	}
-
-	err = h.rec.ReconcilePendingEvent(r.Context(), ev.EventID)
-	if err != nil {
-		h.Log.Error().Err(err).Msg("Reconciling event failed")
-		return
-	}
 }
 
 func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {

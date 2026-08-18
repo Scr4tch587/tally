@@ -212,26 +212,42 @@ func FindPendingMatchCandidates(ctx context.Context, pool *pgxpool.Pool, ev *eve
 	return candidates, nil
 }
 
-func FindRecentPendingEvents(ctx context.Context, pool *pgxpool.Pool, limit int) ([]string, error) {
+type PendingCursor struct {
+	IngestedAt time.Time
+	EventID    string
+}
+
+func FindPendingEventsAfter(ctx context.Context, pool *pgxpool.Pool, cursor PendingCursor, limit int) ([]string, PendingCursor, error) {
 	rows, err := pool.Query(
 		ctx,
-		`SELECT event_id FROM canonical_events WHERE match_status = 'PENDING' ORDER BY ingested_at DESC LIMIT $1`,
+		`SELECT event_id, ingested_at FROM canonical_events
+		  WHERE match_status = 'PENDING'
+		    AND (ingested_at, event_id) > ($1, $2)
+		  ORDER BY ingested_at, event_id
+		  LIMIT $3`,
+		cursor.IngestedAt,
+		cursor.EventID,
 		limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, cursor, err
 	}
 	defer rows.Close()
 
-	eventIDs := make([]string, 0)
+	eventIDs := make([]string, 0, limit)
+	next := cursor
 	for rows.Next() {
 		var eventID string
-		err = rows.Scan(&eventID)
-		if err != nil {
-			return nil, err
+		var ingestedAt time.Time
+		if err = rows.Scan(&eventID, &ingestedAt); err != nil {
+			return nil, cursor, err
 		}
 		eventIDs = append(eventIDs, eventID)
+		next = PendingCursor{IngestedAt: ingestedAt, EventID: eventID}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, cursor, err
 	}
 
-	return eventIDs, rows.Err()
+	return eventIDs, next, nil
 }
