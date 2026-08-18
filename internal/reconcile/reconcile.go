@@ -122,36 +122,48 @@ func (e *Engine) ReconcilePendingEvent(ctx context.Context, eventID string) erro
 	return nil
 }
 
-func (e *Engine) ReconcileRecentPending(ctx context.Context, limit int) error {
-	span := sentry.StartSpan(ctx, "reconcile.recent_pending", sentry.WithTransactionName("reconcile.pending_worker"))
+func (e *Engine) ReconcilePendingBatch(ctx context.Context, cursor store.PendingCursor, limit int) (store.PendingCursor, int, error) {
+	span := sentry.StartSpan(ctx, "reconcile.pending_batch", sentry.WithTransactionName("reconcile.pending_worker"))
 	defer span.Finish()
 	ctx = span.Context()
 
-	eventIDs, err := store.FindRecentPendingEvents(ctx, e.Pool, limit)
+	eventIDs, next, err := store.FindPendingEventsAfter(ctx, e.Pool, cursor, limit)
 	if err != nil {
-		e.Log.Error().Err(err).Msg("Finding recent pending events failed")
-		return err
+		e.Log.Error().Err(err).Msg("Finding pending events failed")
+		return cursor, 0, err
 	}
 
 	for _, eventID := range eventIDs {
-		err = e.ReconcilePendingEvent(ctx, eventID)
-		if err != nil {
+		if err := e.ReconcilePendingEvent(ctx, eventID); err != nil {
 			e.Log.Info().Err(err).Str("event_id", eventID).Msg("Reconciling pending event failed")
 			continue
 		}
 	}
 
-	return nil
+	return next, len(eventIDs), nil
+}
+
+func (e *Engine) ReconcileRecentPending(ctx context.Context, limit int) error {
+	_, _, err := e.ReconcilePendingBatch(ctx, store.PendingCursor{}, limit)
+	return err
 }
 
 func StartPendingWorker(ctx context.Context, engine *Engine, interval time.Duration, limit int) {
 	heartbeat := observe.NewCronHeartbeat("pending-reconcile-worker")
+	cursor := store.PendingCursor{}
 	run := func() {
 		defer observe.CapturePanic()
 		heartbeat.Beat()
-		if err := engine.ReconcileRecentPending(ctx, limit); err != nil {
+		next, scanned, err := engine.ReconcilePendingBatch(ctx, cursor, limit)
+		if err != nil {
 			engine.Log.Error().Err(err).Msg("pending reconciliation worker failed")
+			return
 		}
+		if scanned < limit {
+			cursor = store.PendingCursor{}
+			return
+		}
+		cursor = next
 	}
 
 	run()

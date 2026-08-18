@@ -510,7 +510,7 @@ func TestFindPendingMatchCandidatesUsesAssetCodeBeforeCurrency(t *testing.T) {
 	}
 }
 
-func TestFindRecentPendingEventsReturnsOnlyPendingWithLimit(t *testing.T) {
+func TestFindPendingEventsAfterPaginatesOnlyPending(t *testing.T) {
 	ctx := context.Background()
 
 	pool, err := Connect(ctx)
@@ -553,9 +553,9 @@ func TestFindRecentPendingEventsReturnsOnlyPendingWithLimit(t *testing.T) {
 		t.Fatalf("confirm matched fixture: %v", err)
 	}
 
-	eventIDs, err := FindRecentPendingEvents(ctx, pool, 10)
+	eventIDs, _, err := FindPendingEventsAfter(ctx, pool, PendingCursor{}, 10)
 	if err != nil {
-		t.Fatalf("FindRecentPendingEvents: %v", err)
+		t.Fatalf("FindPendingEventsAfter: %v", err)
 	}
 
 	got := stringSet(eventIDs)
@@ -570,12 +570,33 @@ func TestFindRecentPendingEventsReturnsOnlyPendingWithLimit(t *testing.T) {
 		}
 	}
 
-	limitedEventIDs, err := FindRecentPendingEvents(ctx, pool, 1)
+	limitedEventIDs, cursor, err := FindPendingEventsAfter(ctx, pool, PendingCursor{}, 1)
 	if err != nil {
-		t.Fatalf("FindRecentPendingEvents limit 1: %v", err)
+		t.Fatalf("FindPendingEventsAfter limit 1: %v", err)
 	}
 	if len(limitedEventIDs) != 1 {
 		t.Fatalf("limited pending event count = %d, want 1", len(limitedEventIDs))
+	}
+
+	// The livelock regression: a second page must advance past the first,
+	// never return the same slice again, and drain to empty.
+	secondPage, cursor, err := FindPendingEventsAfter(ctx, pool, cursor, 1)
+	if err != nil {
+		t.Fatalf("FindPendingEventsAfter second page: %v", err)
+	}
+	if len(secondPage) != 1 {
+		t.Fatalf("second page count = %d, want 1", len(secondPage))
+	}
+	if secondPage[0] == limitedEventIDs[0] {
+		t.Fatalf("cursor did not advance: page two returned %s again", secondPage[0])
+	}
+
+	thirdPage, _, err := FindPendingEventsAfter(ctx, pool, cursor, 1)
+	if err != nil {
+		t.Fatalf("FindPendingEventsAfter third page: %v", err)
+	}
+	if len(thirdPage) != 0 {
+		t.Fatalf("expected pending set to be exhausted, got %v", thirdPage)
 	}
 }
 
