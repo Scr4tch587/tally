@@ -208,6 +208,17 @@ Per stratum, by the dataset's own `matchRule` provenance:
 
 A third category is reported separately and excluded from the false-positive count: **17,899 "related, out of scope" matches**, where both confirmed events belong to the same `matchId` but that group is N:M rather than 1:1. Those are defensible partial matches, not errors, and folding them into false positives would misstate precision.
 
+**Time to reconcile the corpus end to end** (measured on a separate replay of the same configuration, sampling `PENDING` count every 5s):
+
+| | |
+|---|---|
+| Peak backlog | 144,824 pending at t+68s |
+| Fully drained | t+418s |
+| Drain window | 350s, 122,772 events reconciled |
+| Sustained reconcile rate | ~351 events/sec |
+
+The 22,052 events remaining at the floor have no possible partner — one-sided ledger legs, N:M leftovers, and pairs outside the ±120s candidate window. That is the correct resting state, not a stall.
+
 ### What changed between the two runs
 
 1. **Character n-gram reference similarity** added to the scorer. Whole-token overlap holds for only 25.0% of true pairs; character 6-gram overlap holds for 82.4%, because shared references sit embedded inside longer runs.
@@ -230,7 +241,7 @@ A third category is reported separately and excluded from the false-positive cou
 - **Partial crash recovery.** The background worker is the first retry primitive, but startup Redis rebuild from Postgres pending events is not implemented.
 - **Redis removal is post-commit.** Not part of the Postgres transaction; a crash between commit and Redis cleanup leaves stale index entries until recovery exists.
 - **Load ceiling.** On seed 42 with 40% decoys, correctness breaks at 165 true pairs (1 false positive) under shuffled 16-worker ingestion. This is a synthetic-data figure.
-- **Match latency under burst load.** Because confirmation happens on the worker sweep rather than inline, a large backfill queues behind the sweep. Steady state is unaffected (p50 627ms on the 520-event synthetic gate), but per-match latency during the 149,854-event BenchRec replay was p50 161.8s / p99 320.6s, against p50 247ms / p99 491ms when confirmation ran inline. The worker processes 500 events per 250ms tick sequentially, well under the 3,081 events/sec ingest rate, so the backlog builds during a burst. Time-to-drain is the meaningful metric for a bulk replay; per-match latency in that regime measures queue depth rather than engine speed.
+- **Match latency under burst load.** Because confirmation happens on the worker sweep rather than inline, a large backfill queues behind the sweep. Steady state is unaffected (p50 627ms on the 520-event synthetic gate), but per-match latency during the 149,854-event BenchRec replay was p50 161.8s / p99 320.6s, against p50 247ms / p99 491ms when confirmation ran inline. Per-match latency in that regime measures queue depth rather than engine speed; time-to-drain is the meaningful figure, and it is reported in the BenchRec section above. The sweep is work-bound rather than tick-bound — it sustains ~351 events/sec, so 500 attempts take roughly 1.4s against a 250ms tick and ticks already run back-to-back. Raising the batch limit would not help; parallelizing the sweep would. Not yet done.
 - **No pending expiry.** Events that can never match are re-attempted on every sweep forever. At full BenchRec scale that is roughly 22,000 events of wasted work per pass. Correctness is unaffected.
 
 ---
