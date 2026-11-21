@@ -36,6 +36,7 @@ type config struct {
 	output       string
 	dumpMisses   int
 	reset        bool
+	trace        string
 }
 
 type postResult struct {
@@ -101,6 +102,7 @@ func parseFlags() config {
 	flag.StringVar(&cfg.output, "output", "bench-results/benchrec-latest.json", "JSON report path")
 	flag.IntVar(&cfg.dumpMisses, "dump-misses", 0, "write N missed pairs and false positives to a .misses.txt file")
 	flag.BoolVar(&cfg.reset, "reset", false, "delete benchrec-* tenant data before running")
+	flag.StringVar(&cfg.trace, "trace", "", "write a per-event trace CSV (ingest time, match time, outcome) to this path")
 	flag.Parse()
 
 	cfg.baseURL = strings.TrimRight(cfg.baseURL, "/")
@@ -253,6 +255,14 @@ func run(ctx context.Context, cfg config) error {
 	}
 	fmt.Printf("report written to %s\n", cfg.output)
 
+	if cfg.trace != "" {
+		counts, err := writeTrace(ctx, pool, cfg.trace, runID, truth, matchIDByEventID, dataset.Distractors)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("trace written to %s: %v\n", cfg.trace, counts)
+	}
+
 	if cfg.dumpMisses > 0 {
 		path := strings.TrimSuffix(cfg.output, filepath.Ext(cfg.output)) + ".misses.txt"
 		if err := dumpMisses(path, cfg.dumpMisses, runID, truth, scored, legByEventID); err != nil {
@@ -262,6 +272,116 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	return nil
+}
+
+// Trace outcome codes, one per event.
+const (
+	traceTrue      = "T" // matched to its ground-truth 1:1 partner
+	traceRelated   = "R" // matched within its own N:M group (out of scope, not an error)
+	traceWrong     = "W" // matched to an unrelated event
+	traceMissed    = "M" // unmatched leg of a 1:1 ground-truth pair
+	traceGroup     = "G" // unmatched leg of a two-sided N:M group
+	traceOneSided  = "O" // unmatched, and its group has no entry on the other side
+	traceCSVHeader = "ingest_ms,match_ms,outcome\n"
+)
+
+// writeTrace records, for every event in the run, when it was ingested, when
+// (if ever) it was matched, and how that outcome compares with ground truth.
+// Times are milliseconds from the first ingest, on the database clock. Rows are
+// in ingestion order. The file carries no dataset content, only timings and
+// outcome codes.
+func writeTrace(ctx context.Context, pool *pgxpool.Pool, path, tenantID string, truth loadgen.GroundTruth, matchIDByEventID map[string]string, distractors []benchrec.Leg) (map[string]int, error) {
+	inPair := make(map[string]bool, len(truth.Expected)*2)
+	for _, expected := range truth.Expected {
+		inPair[expected.EventAID] = true
+		inPair[expected.EventBID] = true
+	}
+	groupSides := make(map[string]map[string]bool)
+	for _, leg := range distractors {
+		if groupSides[leg.MatchID] == nil {
+			groupSides[leg.MatchID] = make(map[string]bool, 2)
+		}
+		groupSides[leg.MatchID][leg.Side] = true
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT e.event_id, e.ingested_at, COALESCE(me.match_id, ''), m.created_at
+		  FROM canonical_events e
+		  LEFT JOIN match_events me ON me.event_id = e.event_id
+		  LEFT JOIN matches m ON m.match_id = me.match_id
+		 WHERE e.tenant_id = $1
+		 ORDER BY e.ingested_at, e.event_id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type traceRow struct {
+		eventID   string
+		ingested  time.Time
+		matchID   string
+		matchedAt *time.Time
+	}
+	var all []traceRow
+	members := make(map[string][]string)
+	for rows.Next() {
+		var r traceRow
+		if err := rows.Scan(&r.eventID, &r.ingested, &r.matchID, &r.matchedAt); err != nil {
+			return nil, err
+		}
+		all = append(all, r)
+		if r.matchID != "" {
+			members[r.matchID] = append(members[r.matchID], r.eventID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("no events found for tenant %s", tenantID)
+	}
+
+	start := all[0].ingested
+	counts := make(map[string]int)
+	var builder strings.Builder
+	builder.WriteString(traceCSVHeader)
+	for _, r := range all {
+		outcome := ""
+		matchMillis := int64(-1)
+		if r.matchID != "" && r.matchedAt != nil && len(members[r.matchID]) == 2 {
+			ids := members[r.matchID]
+			matchMillis = r.matchedAt.Sub(start).Milliseconds()
+			switch {
+			case truthHas(truth, ids[0], ids[1]):
+				outcome = traceTrue
+			case matchIDByEventID[ids[0]] != "" && matchIDByEventID[ids[0]] == matchIDByEventID[ids[1]]:
+				outcome = traceRelated
+			default:
+				outcome = traceWrong
+			}
+		} else {
+			switch {
+			case inPair[r.eventID]:
+				outcome = traceMissed
+			case len(groupSides[matchIDByEventID[r.eventID]]) == 2:
+				outcome = traceGroup
+			default:
+				outcome = traceOneSided
+			}
+		}
+		counts[outcome]++
+		fmt.Fprintf(&builder, "%d,%d,%s\n", r.ingested.Sub(start).Milliseconds(), matchMillis, outcome)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return counts, os.WriteFile(path, []byte(builder.String()), 0o644)
+}
+
+func truthHas(truth loadgen.GroundTruth, a, b string) bool {
+	_, ok := truth.Expected[loadgen.PairKey(a, b)]
+	return ok
 }
 
 func computeStrata(truth loadgen.GroundTruth, scored []bench.ObservedMatch, ruleByPairKey map[string]string) []stratum {
