@@ -1,0 +1,13 @@
+{
+  "name": "tally-viz",
+  "private": true,
+  "type": "module",
+  "description": "Renders the README animations from scene code and recorded traces.",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "0.1.68",
+    "jetbrains-mono": "^1.0.6"
+  }
+}

@@ -37,4 +37,4 @@ vendor/
 docs/private/
 
 # Local datasets (BenchRec CC BY 4.0 files kept out of git for size; see docs/spec.md D012)
-data/
+/data/
