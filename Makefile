@@ -1,4 +1,4 @@
-.PHONY: run test migrate bench bench-load k8s-up k8s-down
+.PHONY: run test migrate bench bench-load k8s-up k8s-down viz viz-trace
 
 KIND_CLUSTER ?= tally
 
@@ -62,3 +62,13 @@ bench-load:
 		-output $(OUTPUT) \
 		-steps $(STEPS) \
 		-resume-p99-ms $(RESUME_P99_MS)
+
+# Render the README animations to docs/media/ (needs Node and ffmpeg).
+viz:
+	cd viz && npm install --silent && node render.mjs
+
+# Re-record the trace the hero animation is drawn from (needs the server running).
+viz-trace:
+	go run ./cmd/benchrec -limit 0 -reset -max-wait-sec 480 \
+		-output bench-results/benchrec-trace-run.json \
+		-trace viz/data/drain-trace.csv

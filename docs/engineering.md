@@ -256,6 +256,23 @@ A third category is reported separately and excluded from the false-positive cou
 
 The 22,052 events remaining at the floor have no possible partner — one-sided ledger legs, N:M leftovers, and pairs outside the ±120s candidate window. That is the correct resting state, not a stall.
 
+### Trace run behind the README animation (2026-11-21)
+
+The hero animation is drawn from `viz/data/drain-trace.csv`, one row per event with its ingest time, match time and outcome. That run, on a fresh local database: match rate 0.9321, 2,179 false positives (rate 0.0474), 17,891 related out-of-scope matches, ingest 4,275 events/sec, last match at t+210s. Results vary slightly between runs because arrival order under 16 concurrent workers is not deterministic; the 2026-08-18 run above measured 0.9334 and 2,111.
+
+The trace gives an exact breakdown of the 22,052 events left pending:
+
+| Left pending | events | why |
+|---|---|---|
+| One-sided | 9,792 | the group has no entry on the other side; correctly left alone |
+| N:M group leg | 8,771 | has real counterparts, but only 1:1 matching is implemented |
+| Missed 1:1 leg | 3,489 | a ground-truth pair the engine did not find |
+
+```bash
+make viz-trace   # re-record the trace (server must be running)
+make viz         # render docs/media/*.gif from viz/
+```
+
 ### What candidate narrowing buys
 
 `cmd/lookupbench` loads the full corpus as `PENDING` (149,854 events, nothing matched) and, for 1,000 sampled events, times candidate lookup plus scoring two ways: the engine's real query, and the same query with the amount and time predicates removed so every pending event from the other source is fetched and scored. Measured 2026-11-21, seed 42, local Docker Postgres.

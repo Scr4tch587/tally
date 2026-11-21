@@ -4,7 +4,7 @@ Tally is a reconciliation engine built from scratch in Go. The same payment show
 
 ![The full corpus being ingested and reconciled](docs/media/drain.gif)
 
-Every cell is one event from a real bank-to-ledger dataset: 149,854 of them, posted by 16 concurrent workers and cleared by a background sweep. On that run Tally matched 93.3% of the known pairs, with a 4.6% false-positive rate.
+Every cell is one event from a real bank-to-ledger dataset: 149,854 of them, posted by 16 concurrent workers and cleared by a background sweep. On that run Tally matched 93.2% of the known pairs, with a 4.7% false-positive rate, and the whole corpus was reconciled 210 seconds after the first event arrived. The coloured cells at the end are everything left unmatched, sorted by reason.
 
 ## The data
 
@@ -76,11 +76,11 @@ Each candidate gets a weighted score from four signals: amount, time, account, a
 
 ### Where that leaves it
 
-On the full corpus, these changes together took the match rate from 0.8873 to **0.9334** and false positives from 4,615 to **2,111**. The backlog of 122,772 matchable events drains in 350 seconds, about 351 events per second.
+On the full corpus, these changes together took the match rate from 0.8873 to **0.9321** and false positives from 4,615 to **2,179**. In the run shown at the top, all 149,854 events were ingested in 35 seconds and the backlog was fully drained by 210 seconds.
 
 What is not solved:
 
-- The 4.6% false-positive rate. Refusing to confirm when the top two candidates are nearly tied is the next step and is not built.
+- The 4.7% false-positive rate. Refusing to confirm when the top two candidates are nearly tied is the next step and is not built.
 - Hand-matched pairs. Tally finds 13.4% of them, because most differ by more than a cent or a day and never reach scoring.
 - Many-to-many matches. Only one-to-one pairs are matched.
 
@@ -123,6 +123,7 @@ Two concurrent workers can never both claim the same event: confirmation checks 
 ## More
 
 - [Engineering notes](docs/engineering.md): design rationale, full results by match rule, known limitations, and how to run everything locally.
+- The animations are rendered from code in [`viz/`](viz/). The one at the top is drawn from a recorded trace of a real run (`make viz-trace`, then `make viz`).
 - [Spec](docs/spec.md) and [progress tracker](docs/progress.md).
 
 The BenchRec cash reconciliation dataset v1.0 (ICAIF 2023) is used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
